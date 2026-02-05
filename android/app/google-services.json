@@ -1,0 +1,83 @@
+{
+  "project_info": {
+    "project_number": "430371579191",
+    "firebase_url": "https://keep-watch-d3e89-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "keep-watch-d3e89",
+    "storage_bucket": "keep-watch-d3e89.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:430371579191:android:a5387d36d0b9ef289926b2",
+        "android_client_info": {
+          "package_name": "com.example.keep_watch_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "430371579191-1ak7n9j5qsq92q9i7p267bi0702snbpf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4TCzON6iRSL61lMH2SAL5HgPyWJDt6Bc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "430371579191-1ak7n9j5qsq92q9i7p267bi0702snbpf.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "430371579191-p7c80k1v168fa8qcq7dn7jncnjk8avgb.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.thesis"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:430371579191:android:fef68be2c1dc4e429926b2",
+        "android_client_info": {
+          "package_name": "com.example.thesis"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "430371579191-1ak7n9j5qsq92q9i7p267bi0702snbpf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4TCzON6iRSL61lMH2SAL5HgPyWJDt6Bc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "430371579191-1ak7n9j5qsq92q9i7p267bi0702snbpf.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "430371579191-p7c80k1v168fa8qcq7dn7jncnjk8avgb.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.thesis"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

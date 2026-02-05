@@ -1,0 +1,35 @@
+name: thesis
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.3 <4.0.0' # Updated to support new Firebase
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- FIREBASE (Updated to Fix "Pigeon/Crash" Error) ---
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  firebase_database: ^11.1.0
+
+  # --- MAPS & LOCATION ---
+  # Keeping these versions stable prevents syntax errors in your map code
+  google_maps_flutter: ^2.10.0 
+  geolocator: ^13.0.1
+  flutter_map: ^6.1.0 
+  latlong2: ^0.9.1
+
+  # --- ICONS ---
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
