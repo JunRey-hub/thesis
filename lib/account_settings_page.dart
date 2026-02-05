@@ -1,7 +1,10 @@
+import 'dart:io'; // Required for handling local files
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_storage/firebase_storage.dart'; // Required for Storage
 import 'package:flutter/material.dart';
-import 'app_colors.dart'; // Ensure you have this imported
+import 'package:image_picker/image_picker.dart'; // Required for picking images
+import 'app_colors.dart'; 
 
 class AccountSettingsPage extends StatefulWidget {
   const AccountSettingsPage({super.key});
@@ -16,6 +19,11 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
   
   User? user = FirebaseAuth.instance.currentUser; 
   bool _isLoading = false;
+  
+  // --- New Variables for Image Handling ---
+  File? _imageFile;           // Stores the image selected from gallery
+  String? _profileImageUrl;   // Stores the URL downloaded from Firebase
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
@@ -34,32 +42,98 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
           setState(() {
             _nameController.text = data['fullName'] ?? '';
             _phoneController.text = data['phone'] ?? '';
+            // Load the saved image URL if it exists
+            _profileImageUrl = data['profileImage']; 
           });
         }
       }
     }
   }
 
-  // Save changes to Realtime Database
+  // --- Step 1: Pick Image from Gallery ---
+  Future<void> _pickImage() async {
+    try {
+      final XFile? pickedFile = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512, // Resize to save data/storage
+        maxHeight: 512,
+        imageQuality: 75,
+      );
+      
+      if (pickedFile != null) {
+        setState(() {
+          _imageFile = File(pickedFile.path);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error picking image: $e"))
+        );
+      }
+    }
+  }
+
+  // --- Step 2: Upload Image to Firebase Storage ---
+  Future<String?> _uploadImage() async {
+    // If no new image was picked, just return the old URL
+    if (_imageFile == null) return _profileImageUrl;
+    if (user == null) return null;
+
+    try {
+      // 1. Create a reference to "user_images/USER_ID.jpg"
+      final storageRef = FirebaseStorage.instance
+          .ref()
+          .child('user_images/${user!.uid}.jpg');
+      
+      // 2. Upload the file
+      await storageRef.putFile(_imageFile!);
+      
+      // 3. Get the permanent download URL
+      String downloadUrl = await storageRef.getDownloadURL();
+      return downloadUrl;
+    } catch (e) {
+      print("Storage Error: $e");
+      throw Exception("Image upload failed. Check your internet.");
+    }
+  }
+
+  // --- Step 3: Save Everything to Database ---
   Future<void> _saveChanges() async {
     if (user == null) return;
 
     setState(() => _isLoading = true);
 
     try {
+      // A. Upload the image first (if changed)
+      String? imageUrl = await _uploadImage();
+
+      // B. Update Realtime Database with Name, Phone, and Image URL
       await FirebaseDatabase.instance.ref("users/${user!.uid}").update({
         "fullName": _nameController.text.trim(),
         "phone": _phoneController.text.trim(),
+        "profileImage": imageUrl, // Save the URL
       });
 
+      // C. Update local state
       if (mounted) {
+        setState(() {
+          _profileImageUrl = imageUrl;
+          _imageFile = null; // Clear local file since it's now saved online
+        });
+        
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Account details saved!"), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text("Account details saved successfully!"), 
+            backgroundColor: Colors.green
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to save: $e"), backgroundColor: Colors.red)
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -68,6 +142,14 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Determine which image to show: Local File > Network URL > Default Icon
+    ImageProvider? backgroundImage;
+    if (_imageFile != null) {
+      backgroundImage = FileImage(_imageFile!);
+    } else if (_profileImageUrl != null) {
+      backgroundImage = NetworkImage(_profileImageUrl!);
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("Edit Profile"),
@@ -79,15 +161,18 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            // --- Profile Image Placeholder ---
+            // --- Profile Image Area ---
             Center(
               child: Stack(
                 children: [
                   CircleAvatar(
                     radius: 60,
                     backgroundColor: Colors.grey[800],
-                    backgroundImage: null, // Add NetworkImage here if you implement storage
-                    child: const Icon(Icons.person, size: 60, color: Colors.white54),
+                    backgroundImage: backgroundImage,
+                    // Only show the person icon if there is no image to display
+                    child: backgroundImage == null 
+                        ? const Icon(Icons.person, size: 60, color: Colors.white54) 
+                        : null,
                   ),
                   Positioned(
                     bottom: 0,
@@ -97,12 +182,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       backgroundColor: AppColors.accent,
                       child: IconButton(
                         icon: const Icon(Icons.camera_alt, size: 18, color: Colors.black),
-                        onPressed: () {
-                          // Logic for image picker would go here
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Image upload feature coming soon!"))
-                          );
-                        },
+                        onPressed: _pickImage, // TRIGGERS THE IMAGE PICKER
                       ),
                     ),
                   )
@@ -164,7 +244,10 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                   padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
                 child: _isLoading 
-                  ? const CircularProgressIndicator(color: Colors.black)
+                  ? const SizedBox(
+                      height: 20, width: 20, 
+                      child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2)
+                    )
                   : const Text("SAVE CHANGES", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
               ),
             ),
