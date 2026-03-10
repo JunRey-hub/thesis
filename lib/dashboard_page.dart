@@ -37,11 +37,28 @@ class _MainScaffoldState extends State<MainScaffold> {
       _geofenceMode == 'fixed' ? _fixedCenter : _myLocation;
 
   // ── Wristband Status ──────────────────────────────────────────────
-  String? _pairedWristbandId;
-  String? _wristbandLabel;
-  DateTime? _wristbandLastSeen;
-  int? _wristbandBattery;
-  bool _isWristbandOnline = false;
+  /// All paired devices: deviceId → label
+  Map<String, String> _pairedDevices = {};
+  /// Per-device online flag
+  Map<String, bool> _deviceOnline = {};
+  /// Per-device battery %
+  Map<String, int?> _deviceBattery = {};
+  /// Per-device last seen
+  Map<String, DateTime?> _deviceLastSeen = {};
+  /// Live listeners keyed by deviceId
+  final Map<String, StreamSubscription> _deviceSubs = {};
+
+  // Convenience getters (first device, used by status card / geofence)
+  String? get _pairedWristbandId =>
+      _pairedDevices.isEmpty ? null : _pairedDevices.keys.first;
+  String? get _wristbandLabel =>
+      _pairedDevices.isEmpty ? null : _pairedDevices.values.first;
+  bool get _isWristbandOnline =>
+      _deviceOnline.values.any((v) => v == true);
+  int? get _wristbandBattery =>
+      _pairedDevices.isEmpty ? null : _deviceBattery[_pairedDevices.keys.first];
+  DateTime? get _wristbandLastSeen =>
+      _pairedDevices.isEmpty ? null : _deviceLastSeen[_pairedDevices.keys.first];
 
   // ── Logs & Alerts ─────────────────────────────────────────────────
   List<String> _activityLogs = [];
@@ -69,6 +86,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void dispose() {
     _positionStream?.cancel();
+    for (final sub in _deviceSubs.values) sub.cancel();
     super.dispose();
   }
 
@@ -85,20 +103,50 @@ class _MainScaffoldState extends State<MainScaffold> {
 
       final data = snap.value as Map? ?? {};
 
+      // Cancel old device listeners before reloading
+      for (final sub in _deviceSubs.values) await sub.cancel();
+      _deviceSubs.clear();
+
+      // Clear all stale device state so unpaired devices disappear immediately
       setState(() {
-        // Profile
+        _teamLocations.clear();
+        _deviceOnline.clear();
+        _deviceBattery.clear();
+        _deviceLastSeen.clear();
+        _previousUserStatus.clear();
+      });
+
+      // Load paired devices (new multi-device structure)
+      final Map<String, String> loaded = {};
+      final newMap = data['paired_wristbands'];
+      if (newMap is Map) {
+        newMap.forEach((k, v) {
+          final id    = k.toString();
+          final label = (v is Map ? v['label'] : v)?.toString() ?? 'Wristband';
+          loaded[id]  = label;
+        });
+      }
+      // Migrate old single-device field — delete it after migrating so it never re-appears
+      if (loaded.isEmpty) {
+        final oldId    = data['paired_wristband']?.toString();
+        final oldLabel = data['wristband_label']?.toString() ?? 'Wristband';
+        if (oldId != null && oldId.isNotEmpty) {
+          loaded[oldId] = oldLabel;
+          await _db.ref('users/${user.uid}/paired_wristbands/$oldId').set({'label': oldLabel});
+          await _db.ref('users/${user.uid}').update({
+            'paired_wristband': null,
+            'wristband_label': null,
+          });
+        }
+      }
+
+      setState(() {
         _profileImageUrl = data['profileImage']?.toString();
+        _pairedDevices   = loaded;
+        _geofenceRadius  = (data['geofence_radius'] as num?)?.toDouble() ?? 50.0;
+        _geofenceMode    = data['geofence_mode']?.toString() ?? 'dynamic';
+        _alertsEnabled   = data['alerts_enabled'] != false;
 
-        // Wristband pairing
-        _pairedWristbandId = data['paired_wristband']?.toString();
-        _wristbandLabel = data['wristband_label']?.toString() ?? 'Wristband';
-
-        // Saved geofence preferences
-        _geofenceRadius = (data['geofence_radius'] as num?)?.toDouble() ?? 50.0;
-        _geofenceMode = data['geofence_mode']?.toString() ?? 'dynamic';
-        _alertsEnabled = data['alerts_enabled'] != false;
-
-        // Restore fixed center if set
         final savedLat = (data['fixed_center_lat'] as num?)?.toDouble();
         final savedLng = (data['fixed_center_lng'] as num?)?.toDouble();
         if (savedLat != null && savedLng != null) {
@@ -106,11 +154,12 @@ class _MainScaffoldState extends State<MainScaffold> {
         }
       });
 
-      // Start listening to the wristband AFTER we know its ID
-      if (_pairedWristbandId != null && _pairedWristbandId!.isNotEmpty) {
-        _listenToWristband(_pairedWristbandId!);
-      } else {
+      if (loaded.isEmpty) {
         _addLog("SYSTEM: No paired wristband. Go to Settings → Device to pair one.");
+      } else {
+        for (final id in loaded.keys) {
+          _listenToWristband(id);
+        }
       }
     } catch (e) {
       _addLog("SYSTEM ERROR: Failed to load settings.");
@@ -192,24 +241,28 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // WRISTBAND LIVE LISTENER
+  // WRISTBAND LIVE LISTENER  (one subscription per device)
   // ─────────────────────────────────────────────────────────────────
   void _listenToWristband(String wristbandId) {
-    _addLog("SYSTEM: Linked to wristband [$wristbandId]");
+    if (_deviceSubs.containsKey(wristbandId)) return; // no double-subscribe
 
-    _db.ref('live_location/$wristbandId').onValue.listen((event) {
+    final label = _pairedDevices[wristbandId] ?? wristbandId;
+    _addLog("SYSTEM: Linked to [$label]");
+
+    final sub = _db.ref('live_location/$wristbandId').onValue.listen((event) {
       if (!mounted) return;
 
       if (!event.snapshot.exists || event.snapshot.value == null) {
         setState(() {
-          _teamLocations = {};
-          _isWristbandOnline = false;
+          _teamLocations.remove(wristbandId);
+          _deviceOnline[wristbandId] = false;
         });
         return;
       }
 
       try {
-        final payload = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
+        final payload =
+            Map<dynamic, dynamic>.from(event.snapshot.value as Map);
 
         double? lat;
         double? lng;
@@ -223,9 +276,10 @@ class _MainScaffoldState extends State<MainScaffold> {
             );
 
         // TTN uplink_message fallback
-        if ((lat == null || lng == null) && payload.containsKey('uplink_message')) {
+        if ((lat == null || lng == null) &&
+            payload.containsKey('uplink_message')) {
           final decoded =
-              (payload['uplink_message'] as Map?)??['decoded_payload'] as Map?;
+              (payload['uplink_message'] as Map?)?['decoded_payload'] as Map?;
           if (decoded != null) {
             lat = double.tryParse(decoded['latitude']?.toString() ?? '');
             lng = double.tryParse(decoded['longitude']?.toString() ?? '');
@@ -235,20 +289,23 @@ class _MainScaffoldState extends State<MainScaffold> {
         // Battery level (optional field)
         int? battery = (payload['battery'] ?? payload['Battery']) != null
             ? int.tryParse(
-                (payload['battery'] ?? payload['Battery']).toString(),
-              )
+                (payload['battery'] ?? payload['Battery']).toString())
             : null;
 
-        // Timestamp (optional field — epoch ms)
+        // Timestamp — supports epoch ms (int) OR string date "YYYY-MM-DD HH:MM:SS"
         DateTime? lastSeen;
-        final tsRaw = payload['timestamp'] ?? payload['Timestamp'];
+        final tsRaw = payload['timestamp'] ?? payload['Timestamp'] ??
+                      payload['last_updated'] ?? payload['Last_Updated'];
         if (tsRaw != null) {
           final tsInt = int.tryParse(tsRaw.toString());
           if (tsInt != null) {
             lastSeen = DateTime.fromMillisecondsSinceEpoch(tsInt);
+          } else {
+            // Try parsing as ISO / human-readable date string
+            lastSeen = DateTime.tryParse(tsRaw.toString());
           }
         }
-        lastSeen ??= DateTime.now(); // fallback to now if no timestamp in payload
+        lastSeen ??= DateTime.now();
 
         if (lat != null && lng != null) {
           final wristbandPos = google_maps.LatLng(lat, lng);
@@ -257,35 +314,38 @@ class _MainScaffoldState extends State<MainScaffold> {
             _activeCenter.latitude,
             _activeCenter.longitude,
           );
-          final isSafe = distFromCenter <= _geofenceRadius;
+          final isSafe  = distFromCenter <= _geofenceRadius;
           final wasSafe = _previousUserStatus[wristbandId] ?? true;
 
-          // Breach / return events
           if (isSafe != wasSafe && _alertsEnabled) {
+            final devLabel = _pairedDevices[wristbandId] ?? wristbandId;
             if (!isSafe) {
               _addLog(
-                "ALERT: Target exited Safe Zone (${distFromCenter.toStringAsFixed(1)}m from center)",
+                "ALERT: [$devLabel] exited Safe Zone "
+                "(${distFromCenter.toStringAsFixed(1)}m from center)",
               );
               HapticFeedback.heavyImpact();
             } else {
-              _addLog("Target returned to Safe Zone.");
+              _addLog("[$devLabel] returned to Safe Zone.");
             }
           }
           _previousUserStatus[wristbandId] = isSafe;
 
           setState(() {
-            _teamLocations = {wristbandId: wristbandPos};
-            _isWristbandOnline = true;
-            _wristbandBattery = battery;
-            _wristbandLastSeen = lastSeen;
+            _teamLocations[wristbandId]   = wristbandPos;
+            _deviceOnline[wristbandId]    = true;
+            _deviceBattery[wristbandId]   = battery;
+            _deviceLastSeen[wristbandId]  = lastSeen;
           });
         }
       } catch (e) {
         debugPrint("Error parsing wristband data: $e");
       }
-    }).onError((error) {
-      _addLog("SYSTEM ERROR: Firebase permission denied for wristband data.");
     });
+    sub.onError((_) =>
+        _addLog("SYSTEM ERROR: Firebase permission denied for wristband data."));
+
+    _deviceSubs[wristbandId] = sub;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -379,6 +439,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       MapTab(
         guardianLocation: _myLocation,
         teamLocations: _teamLocations,
+        pairedDevices: _pairedDevices,
         center: _activeCenter,
         radius: _geofenceRadius,
         geofenceMode: _geofenceMode,
@@ -1155,6 +1216,7 @@ class _ModeToggleButton extends StatelessWidget {
 class MapTab extends StatefulWidget {
   final google_maps.LatLng guardianLocation;
   final Map<String, google_maps.LatLng> teamLocations;
+  final Map<String, String> pairedDevices; // id → label
   final google_maps.LatLng center;
   final double radius;
   final String geofenceMode;
@@ -1164,6 +1226,7 @@ class MapTab extends StatefulWidget {
     super.key,
     required this.guardianLocation,
     required this.teamLocations,
+    required this.pairedDevices,
     required this.center,
     required this.radius,
     required this.geofenceMode,
@@ -1236,6 +1299,7 @@ class _MapTabState extends State<MapTab> {
         widget.center.latitude, widget.center.longitude,
       );
       final isSafe = dist <= widget.radius;
+      final label  = widget.pairedDevices[id] ?? id; // show user-set name, fallback to ID
 
       markers.add(
         google_maps.Marker(
@@ -1245,7 +1309,7 @@ class _MapTabState extends State<MapTab> {
             isSafe ? 120.0 : 0.0,
           ),
           infoWindow: google_maps.InfoWindow(
-            title: id,
+            title: label,
             snippet: isSafe
                 ? "Safe (${dist.toStringAsFixed(0)}m)"
                 : "BREACH (${dist.toStringAsFixed(0)}m away)",

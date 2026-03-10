@@ -18,8 +18,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   String? _fullName;
   String? _profileImageUrl;
-  String? _pairedWristbandId;
-  String? _wristbandLabel;
+  Map<String, String> _pairedDevices = {}; // deviceId → label
   bool _alertsEnabled = true;
 
   final _db = FirebaseDatabase.instanceFor(
@@ -40,12 +39,34 @@ class _SettingsPageState extends State<SettingsPage> {
     final snap = await _db.ref('users/${user.uid}').get();
     if (snap.exists && mounted) {
       final data = snap.value as Map? ?? {};
+      // Load paired devices (new multi-device structure)
+      final Map<String, String> loaded = {};
+      final newMap = data['paired_wristbands'];
+      if (newMap is Map) {
+        newMap.forEach((k, v) {
+          final id    = k.toString();
+          final label = (v is Map ? v['label'] : v)?.toString() ?? 'Wristband';
+          loaded[id]  = label;
+        });
+      }
+      // Fallback: migrate old single-device field — delete it after so it never re-appears
+      if (loaded.isEmpty) {
+        final oldId    = data['paired_wristband']?.toString();
+        final oldLabel = data['wristband_label']?.toString() ?? 'Wristband';
+        if (oldId != null && oldId.isNotEmpty) {
+          loaded[oldId] = oldLabel;
+          await _db.ref('users/${user.uid}/paired_wristbands/$oldId').set({'label': oldLabel});
+          await _db.ref('users/${user.uid}').update({
+            'paired_wristband': null,
+            'wristband_label': null,
+          });
+        }
+      }
       setState(() {
-        _fullName          = data['fullName']?.toString() ?? 'Guardian';
-        _profileImageUrl   = data['profileImage']?.toString();
-        _pairedWristbandId = data['paired_wristband']?.toString();
-        _wristbandLabel    = data['wristband_label']?.toString() ?? 'Unnamed Device';
-        _alertsEnabled     = data['alerts_enabled'] != false;
+        _fullName        = data['fullName']?.toString() ?? 'Guardian';
+        _profileImageUrl = data['profileImage']?.toString();
+        _pairedDevices   = loaded;
+        _alertsEnabled   = data['alerts_enabled'] != false;
       });
     }
   }
@@ -250,82 +271,81 @@ class _SettingsPageState extends State<SettingsPage> {
             c: c,
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.watch,
-                        color: _pairedWristbandId != null ? c.success : c.textSecondary,
-                        size: 22,
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                // Show each paired device or empty state
+                if (_pairedDevices.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    child: Row(
+                      children: [
+                        Icon(Icons.watch_off,
+                            color: c.textSecondary, size: 22),
+                        const SizedBox(width: 14),
+                        Text("No devices paired",
+                            style: TextStyle(color: c.textSecondary)),
+                      ],
+                    ),
+                  )
+                else
+                  ..._pairedDevices.entries.map((entry) => Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Row(
                           children: [
-                            Text(
-                              _pairedWristbandId != null
-                                  ? (_wristbandLabel ?? 'Paired Device')
-                                  : "No Device Paired",
-                              style: TextStyle(
-                                color: _pairedWristbandId != null
-                                    ? c.textPrimary
-                                    : c.textSecondary,
-                                fontWeight: FontWeight.w500,
+                            Icon(Icons.watch, color: c.success, size: 22),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  Text(entry.value,
+                                      style: TextStyle(
+                                          color: c.textPrimary,
+                                          fontWeight: FontWeight.w500)),
+                                  Text(entry.key,
+                                      style: TextStyle(
+                                          color: c.textSecondary,
+                                          fontSize: 11,
+                                          fontFamily: "Courier")),
+                                ],
                               ),
                             ),
-                            if (_pairedWristbandId != null)
-                              Text(
-                                _pairedWristbandId!,
-                                style: TextStyle(
-                                  color: c.textSecondary,
-                                  fontSize: 11,
-                                  fontFamily: "Courier",
-                                ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: c.success.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(20),
                               ),
+                              child: Text("Paired",
+                                  style: TextStyle(
+                                      color: c.success,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold)),
+                            ),
                           ],
                         ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: _pairedWristbandId != null
-                              ? c.success.withOpacity(0.15)
-                              : c.textSecondary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          _pairedWristbandId != null ? "Paired" : "None",
-                          style: TextStyle(
-                            color: _pairedWristbandId != null
-                                ? c.success
-                                : c.textSecondary,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                      )),
+
                 _divider(c),
                 ListTile(
                   leading: Icon(Icons.device_hub, color: c.textSecondary),
                   title: Text(
-                    _pairedWristbandId != null
-                        ? "Change Paired Device"
-                        : "Pair a Wristband",
+                    _pairedDevices.isEmpty
+                        ? "Pair a Wristband"
+                        : "Manage Devices (${_pairedDevices.length})",
                     style: TextStyle(color: c.textPrimary),
                   ),
-                  subtitle: Text("Link a LoRa tracking wristband",
-                      style: TextStyle(color: c.textSecondary, fontSize: 12)),
+                  subtitle: Text("Add or remove LoRa tracking wristbands",
+                      style: TextStyle(
+                          color: c.textSecondary, fontSize: 12)),
                   trailing: Icon(Icons.arrow_forward_ios,
                       size: 14, color: c.textSecondary),
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const WristbandPairingPage()),
+                    MaterialPageRoute(
+                        builder: (_) => const WristbandPairingPage()),
                   ).then((_) => _loadUserData()),
                 ),
               ],
