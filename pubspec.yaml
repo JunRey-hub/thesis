@@ -5,31 +5,41 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.2.3 <4.0.0' # Updated to support new Firebase
+  sdk: '>=3.2.3 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
 
-  # --- FIREBASE (Updated to Fix "Pigeon/Crash" Error) ---
+  # --- FIREBASE ---
   firebase_core: ^3.6.0
-  firebase_auth: ^5.3.1      # Make sure this is updated too
-  firebase_database: ^11.3.10 # Make sure this is updated too
+  firebase_auth: ^5.3.1
+  firebase_database: ^11.3.10
+  firebase_storage: ^12.4.0
+  cloud_firestore: ^5.6.12
 
-  # --- Image Handling ---
+  # --- IMAGE HANDLING ---
   image_picker: ^1.1.2
-  firebase_storage: ^12.4.0  # <--- CHANGE THIS to 12.4.0 or higher
   cached_network_image: ^3.4.1
+
   # --- MAPS & LOCATION ---
-  # Keeping these versions stable prevents syntax errors in your map code
-  google_maps_flutter: ^2.15.0 
+  google_maps_flutter: ^2.15.0
   geolocator: ^13.0.1
-  flutter_map: ^6.1.0 
+  flutter_map: ^6.1.0
   latlong2: ^0.9.1
+
+  # --- QR CODE ---
+  mobile_scanner: ^5.0.0
+  qr_flutter: ^4.1.0
+
+  # --- LOCAL STORAGE ---
+  shared_preferences: ^2.2.0
 
   # --- ICONS ---
   cupertino_icons: ^1.0.8
-  cloud_firestore: ^5.6.12
+
+  # ---- permissions ----
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
