@@ -1,14 +1,13 @@
-// lib/dashboard_page.dart
-
 import 'dart:async';
-import 'dart:math';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as google_maps;
 import 'package:geolocator/geolocator.dart';
 import 'app_colors.dart';
-import 'settings_page.dart'; // <--- KEEPING THIS IMPORT FOR SETTINGS
+import 'settings_page.dart';
 
 // --- MAIN DASHBOARD SCREEN ---
 class MainScaffold extends StatefulWidget {
@@ -21,32 +20,87 @@ class MainScaffold extends StatefulWidget {
 class _MainScaffoldState extends State<MainScaffold> {
   int _currentIndex = 0;
 
-  // -- STATE --
-  google_maps.LatLng _myLocation = const google_maps.LatLng(0, 0);
-  Map<String, google_maps.LatLng> _teamLocations = {};
-  
-  // MOVEMENT VECTORS
-  Map<String, List<double>> _userDirections = {}; 
+  // -- ADD THIS: Stream subscription to prevent memory leaks --
+  StreamSubscription<Position>? _positionStream;
 
-  bool _usersSpawned = false;
+  // -- UPDATED: Default set to Dumaguete instead of (0,0) and Googleplex --
+  google_maps.LatLng _myLocation = const google_maps.LatLng(9.3068, 123.3054);
+  google_maps.LatLng _geofenceCenter = const google_maps.LatLng(9.3068, 123.3054);
+  
+  // STATE
+  Map<String, google_maps.LatLng> _teamLocations = {};
   
   // SETTINGS
   double _geofenceRadius = 50.0;
-  double _targetCount = 3.0; 
 
   // LOGS
   List<String> _activityLogs = [];
   Map<String, bool> _previousUserStatus = {}; 
-  
-  // GEOFENCE CENTER (Guardian)
-  google_maps.LatLng _geofenceCenter = const google_maps.LatLng(37.4219983, -122.084);
-  
+
+  // --- PROFILE IMAGE STATE ---
+  String? _profileImageUrl;
+
   @override
   void initState() {
     super.initState();
     _startTracking();
-    _startMovementLoop();
+    _testFirebaseConnection(); 
+    _listenToLiveLocations(); 
+    _loadProfileImage(); 
     _addLog("Guardian Authorized. System Online.");
+  }
+
+  // -- ADD THIS: Cleanup method for when you switch accounts/log out --
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    super.dispose();
+  }
+
+  // --- 0. TEST FIREBASE CONNECTION ---
+  void _testFirebaseConnection() {
+    final database = FirebaseDatabase.instanceFor(
+      app: FirebaseDatabase.instance.app,
+      databaseURL: 'https://keep-watch-d3e89-default-rtdb.asia-southeast1.firebasedatabase.app/',
+    );
+
+    database.ref(".info/connected").onValue.listen((event) {
+      final connected = event.snapshot.value as bool? ?? false;
+      if (connected) {
+        print("🟢 SUCCESS: FIREBASE IS CONNECTED!");
+        _addLog("SYSTEM: Database connection established.");
+      } else {
+        print("🔴 ERROR: FIREBASE IS DISCONNECTED.");
+        _addLog("SYSTEM: Database disconnected.");
+      }
+    });
+  }
+
+  // --- FETCH PROFILE IMAGE ---
+  Future<void> _loadProfileImage() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+        if (doc.exists && mounted) {
+          final data = doc.data();
+          if (data != null && data.containsKey('profileImage')) {
+             setState(() {
+               _profileImageUrl = data['profileImage'];
+             });
+             return; 
+          }
+        }
+      } catch (e) {
+        print("Firestore load error: $e");
+      }
+
+      if (user.photoURL != null && mounted) {
+        setState(() {
+          _profileImageUrl = user.photoURL;
+        });
+      }
+    }
   }
 
   void _addLog(String message) {
@@ -58,117 +112,158 @@ class _MainScaffoldState extends State<MainScaffold> {
     });
   }
 
-  // 1. TRACKING
+  // -- UPDATED: 1. TRACKING (Guardian's Location) --
   Future<void> _startTracking() async {
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        _addLog("SYSTEM: GPS Permission Denied.");
+        return;
+      }
     }
 
-    Geolocator.getPositionStream(
+    // INSTANT FETCH: Grab location immediately before waiting for the stream
+    try {
+      Position? currentPos = await Geolocator.getLastKnownPosition() ?? 
+                             await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      if (mounted) {
+        setState(() {
+          _myLocation = google_maps.LatLng(currentPos.latitude, currentPos.longitude);
+          _geofenceCenter = google_maps.LatLng(currentPos.latitude, currentPos.longitude);
+        });
+      }
+    } catch (e) {
+      print("Could not get initial position: $e");
+    }
+
+    // STREAM: Listen for continuous updates
+    _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 3),
     ).listen((Position position) {
       if (mounted) {
         setState(() {
           _myLocation = google_maps.LatLng(position.latitude, position.longitude);
           _geofenceCenter = google_maps.LatLng(position.latitude, position.longitude);
-          
-          if (!_usersSpawned) {
-            _respawnUsers(_targetCount.toInt());
-            _usersSpawned = true;
-          }
         });
       }
     });
   }
 
-  // --- SPAWN USERS ---
-  void _respawnUsers(int count) {
-    Map<String, google_maps.LatLng> newTeam = {};
-    _userDirections.clear();
-    final random = Random();
-
-    for (int i = 1; i <= count; i++) {
-      double angle = random.nextDouble() * 2 * pi;
-      double dist = 10.0 + random.nextInt(70); 
-      double offset = dist * 0.000009;
-
-      double startLat = _geofenceCenter.latitude + (offset * cos(angle));
-      double startLng = _geofenceCenter.longitude + (offset * sin(angle));
-
-      newTeam["User $i"] = google_maps.LatLng(startLat, startLng);
-
-      _userDirections["User $i"] = [
-        (random.nextDouble() - 0.5) * 0.00003, 
-        (random.nextDouble() - 0.5) * 0.00003
-      ];
+  // 2. REALTIME FIREBASE LISTENER (SECURE TWO-STEP FETCH)
+  void _listenToLiveLocations() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _addLog("SYSTEM: No user logged in. Tracking disabled.");
+      return;
     }
 
-    setState(() {
-      _teamLocations = newTeam;
-      _previousUserStatus.clear();
-      newTeam.forEach((key, value) {
-        double d = Geolocator.distanceBetween(
-          value.latitude, value.longitude, 
-          _geofenceCenter.latitude, _geofenceCenter.longitude
-        );
-        _previousUserStatus[key] = d <= _geofenceRadius;
-      });
-    });
-  }
+    final database = FirebaseDatabase.instanceFor(
+      app: FirebaseDatabase.instance.app,
+      databaseURL: 'https://keep-watch-d3e89-default-rtdb.asia-southeast1.firebasedatabase.app/',
+    );
 
-  // 2. MOVEMENT LOOP
-  void _startMovementLoop() {
-    Timer.periodic(const Duration(milliseconds: 1000), (timer) {
-      if (!mounted) return;
-      if (_teamLocations.isEmpty) return;
+    try {
+      // STEP 1: Find which wristband belongs to this user
+      final userSnapshot = await database.ref('users/${user.uid}/paired_wristband').get();
+      
+      String? pairedWristbandId;
+      if (userSnapshot.exists && userSnapshot.value != null) {
+        pairedWristbandId = userSnapshot.value.toString();
+      }
 
-      Map<String, google_maps.LatLng> updatedLocations = {};
-      final random = Random();
+      if (pairedWristbandId == null || pairedWristbandId.isEmpty) {
+        _addLog("SYSTEM: No paired wristband found for this account.");
+        print("No paired wristband ID in Realtime Database under users/${user.uid}/paired_wristband");
+        return;
+      }
 
-      _teamLocations.forEach((user, currentPos) {
-        List<double> direction = _userDirections[user]!;
+      _addLog("SYSTEM: Linked to wristband [$pairedWristbandId]");
+
+      // STEP 2: Listen specifically to that single wristband
+      DatabaseReference ref = database.ref('live_location/$pairedWristbandId');
+      
+      ref.onValue.listen((DatabaseEvent event) {
+        if (!mounted) return;
         
-        double newLat = currentPos.latitude + direction[0];
-        double newLng = currentPos.longitude + direction[1];
+        if (event.snapshot.exists && event.snapshot.value != null) {
+          try {
+            final payloadData = event.snapshot.value;
+            
+            if (payloadData != null && payloadData is Map) {
+              final payload = Map<dynamic, dynamic>.from(payloadData);
+              double? lat;
+              double? lng;
 
-        double distFromGuardian = Geolocator.distanceBetween(
-          newLat, newLng, 
-          _geofenceCenter.latitude, _geofenceCenter.longitude
-        );
+              // --- SCENARIO A: ROBUST CASE-INSENSITIVE CHECK ---
+              bool hasLat = payload.containsKey('latitude') || payload.containsKey('Latitude');
+              bool hasLng = payload.containsKey('longitude') || payload.containsKey('Longitude');
 
-        if (distFromGuardian > 120) {
-           double latDiff = _geofenceCenter.latitude - newLat;
-           double lngDiff = _geofenceCenter.longitude - newLng;
-           _userDirections[user] = [latDiff * 0.00001, lngDiff * 0.00001];
-        } 
-        else if (random.nextInt(10) > 8) {
-           _userDirections[user] = [
-             (random.nextDouble() - 0.5) * 0.00004, 
-             (random.nextDouble() - 0.5) * 0.00004
-           ];
-        }
+              if (hasLat && hasLng) {
+                final rawLat = payload['latitude'] ?? payload['Latitude'];
+                final rawLng = payload['longitude'] ?? payload['Longitude'];
+                
+                lat = double.tryParse(rawLat.toString());
+                lng = double.tryParse(rawLng.toString());
+              } 
+              // Scenario B: Raw TTN Webhook format
+              else if (payload.containsKey('uplink_message')) {
+                final uplink = payload['uplink_message'];
+                if (uplink is Map && uplink.containsKey('decoded_payload')) {
+                  final decoded = uplink['decoded_payload'];
+                  if (decoded is Map && decoded.containsKey('latitude') && decoded.containsKey('longitude')) {
+                    lat = double.tryParse(decoded['latitude'].toString());
+                    lng = double.tryParse(decoded['longitude'].toString());
+                  }
+                }
+              }
 
-        updatedLocations[user] = google_maps.LatLng(newLat, newLng);
+              if (lat != null && lng != null) {
+                String deviceId = pairedWristbandId!; // Using the paired ID
+                
+                double distFromGuardian = Geolocator.distanceBetween(
+                  lat, lng, 
+                  _geofenceCenter.latitude, _geofenceCenter.longitude
+                );
 
-        bool isSafe = distFromGuardian <= _geofenceRadius;
-        bool wasSafe = _previousUserStatus[user] ?? true;
+                bool isSafe = distFromGuardian <= _geofenceRadius;
+                bool wasSafe = _previousUserStatus[deviceId] ?? true;
 
-        if (isSafe != wasSafe) {
-          if (!isSafe) {
-            _addLog("ALERT: $user exited Safe Zone ($distFromGuardian.0m)");
-            HapticFeedback.heavyImpact();
-          } else {
-            _addLog("$user entered Safe Zone.");
+                if (isSafe != wasSafe) {
+                  if (!isSafe) {
+                    _addLog("ALERT: Target exited Safe Zone (${distFromGuardian.toStringAsFixed(1)}m)");
+                    HapticFeedback.heavyImpact();
+                  } else {
+                    _addLog("Target entered Safe Zone.");
+                  }
+                  _previousUserStatus[deviceId] = isSafe;
+                }
+
+                // Update UI state securely!
+                setState(() {
+                  _teamLocations = {deviceId: google_maps.LatLng(lat!, lng!)};
+                });
+              }
+            }
+          } catch (e) {
+            print("Error parsing location data: $e");
           }
-          _previousUserStatus[user] = isSafe;
+        } else {
+          // No data found for this wristband
+          setState(() {
+            _teamLocations = {};
+          });
         }
+      }).onError((error) {
+        // --- CATCH FIREBASE RULES ERRORS ---
+        print("🚨 FIREBASE LISTENER ERROR: $error");
+        _addLog("SYSTEM ERROR: Database permission denied.");
       });
 
-      setState(() {
-        _teamLocations = updatedLocations;
-      });
-    });
+    } catch (e) {
+      print("Error fetching paired wristband: $e");
+      _addLog("SYSTEM ERROR: Could not verify paired wristband.");
+    }
   }
 
   @override
@@ -185,15 +280,10 @@ class _MainScaffoldState extends State<MainScaffold> {
     final List<Widget> pages = [
       DashboardTab(
         location: _myLocation,
-        activeUsers: _teamLocations.length,
+        teamLocations: _teamLocations, 
         radius: _geofenceRadius,
-        targetCount: _targetCount,
         isAnyBreach: anyBreach, 
         onRadiusChanged: (val) => setState(() => _geofenceRadius = val),
-        onTargetCountChanged: (val) {
-          setState(() => _targetCount = val);
-          _respawnUsers(val.toInt());
-        },
         onViewMap: () => setState(() => _currentIndex = 1),
       ),
       MapTab(
@@ -217,20 +307,44 @@ class _MainScaffoldState extends State<MainScaffold> {
             letterSpacing: 1.5
           )
         ),
-        // --- SETTINGS BUTTON (KEPT) ---
         actions: [
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsPage()),
-              );
-            },
+          Padding(
+            padding: const EdgeInsets.only(right: 15.0),
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const SettingsPage()),
+                ).then((_) {
+                  _loadProfileImage(); 
+                });
+              },
+              borderRadius: BorderRadius.circular(50),
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24, width: 1.5),
+                  color: AppColors.cardDark,
+                ),
+                child: ClipOval(
+                  child: _profileImageUrl != null
+                      ? Image.network(
+                          _profileImageUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Icon(Icons.person, color: Colors.white, size: 20);
+                          },
+                        )
+                      : const Icon(Icons.settings, color: Colors.white, size: 20),
+                ),
+              ),
+            ),
           ),
         ],
       ),
-      backgroundColor: AppColors.background, // Moved background color here to cover AppBar area
+      backgroundColor: AppColors.background,
       body: pages[_currentIndex],
       bottomNavigationBar: NavigationBar(
         height: 65,
@@ -260,27 +374,22 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 }
 
-// --- SUB-WIDGETS (Dashboard, Map, Logs) ---
-
+// --- SUB-WIDGETS ---
 class DashboardTab extends StatelessWidget {
   final google_maps.LatLng location;
-  final int activeUsers;
+  final Map<String, google_maps.LatLng> teamLocations;
   final double radius;
-  final double targetCount;
   final bool isAnyBreach;
   final ValueChanged<double> onRadiusChanged;
-  final ValueChanged<double> onTargetCountChanged;
   final VoidCallback onViewMap;
 
   const DashboardTab({
     super.key,
     required this.location,
-    required this.activeUsers,
+    required this.teamLocations,
     required this.radius,
-    required this.targetCount,
     required this.isAnyBreach,
     required this.onRadiusChanged,
-    required this.onTargetCountChanged,
     required this.onViewMap,
   });
 
@@ -294,7 +403,6 @@ class DashboardTab extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // HEADER REMOVED (Moved to AppBar)
               const SizedBox(height: 10),
               
               const Text("Status Console", style: TextStyle(color: AppColors.textGrey, fontSize: 13, letterSpacing: 1)),
@@ -329,18 +437,9 @@ class DashboardTab extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text("Active Targets", style: TextStyle(color: Colors.white70)),
-                        Text("${targetCount.toInt()} Users", style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold)),
+                        const Text("Active Targets Tracked", style: TextStyle(color: Colors.white70)),
+                        Text("${teamLocations.length} Users", style: const TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold)),
                       ],
-                    ),
-                    Slider(
-                      value: targetCount,
-                      min: 1,
-                      max: 5, 
-                      divisions: 4, 
-                      activeColor: Colors.orange, 
-                      thumbColor: Colors.white,
-                      onChanged: onTargetCountChanged,
                     ),
                   ],
                 ),
@@ -397,30 +496,34 @@ class DashboardTab extends StatelessWidget {
 
               SizedBox(
                 height: 90,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: activeUsers,
-                  itemBuilder: (context, index) {
-                    return Container(
-                      width: 85,
-                      margin: const EdgeInsets.only(right: 10),
-                      decoration: BoxDecoration(
-                        color: AppColors.cardDark,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.directions_walk, color: Colors.blueGrey, size: 28),
-                          const SizedBox(height: 4),
-                          Text("User ${index + 1}", style: const TextStyle(fontSize: 12, color: Colors.white)),
-                          const SizedBox(height: 2),
-                          const Text("Walking...", style: TextStyle(fontSize: 10, color: AppColors.textGrey)),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                child: teamLocations.isEmpty 
+                  ? const Center(child: Text("No tracking devices detected online.", style: TextStyle(color: AppColors.textGrey)))
+                  : ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: teamLocations.length,
+                    itemBuilder: (context, index) {
+                      String userId = teamLocations.keys.elementAt(index);
+                      return Container(
+                        width: 85,
+                        margin: const EdgeInsets.only(right: 10),
+                        decoration: BoxDecoration(
+                          color: AppColors.cardDark,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.directions_walk, color: Colors.blueGrey, size: 28),
+                            const SizedBox(height: 4),
+                            // Keeps the ID short so it fits the box nicely
+                            Text(userId.length > 8 ? "${userId.substring(0, 8)}..." : userId, style: const TextStyle(fontSize: 12, color: Colors.white)),
+                            const SizedBox(height: 2),
+                            const Text("Tracked", style: TextStyle(fontSize: 10, color: AppColors.success)),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
               ),
 
               const SizedBox(height: 25),

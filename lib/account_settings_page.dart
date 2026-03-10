@@ -1,9 +1,10 @@
-import 'dart:io'; // Required for handling local files
+import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:io'; 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_storage/firebase_storage.dart'; // Required for Storage
+import 'package:firebase_storage/firebase_storage.dart'; 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart'; // Required for picking images
+import 'package:image_picker/image_picker.dart'; 
 import 'app_colors.dart'; 
 
 class AccountSettingsPage extends StatefulWidget {
@@ -20,7 +21,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
   User? user = FirebaseAuth.instance.currentUser; 
   bool _isLoading = false;
   
-  // --- New Variables for Image Handling ---
+  // --- Variables for Image Handling ---
   File? _imageFile;           // Stores the image selected from gallery
   String? _profileImageUrl;   // Stores the URL downloaded from Firebase
   final ImagePicker _picker = ImagePicker();
@@ -55,7 +56,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     try {
       final XFile? pickedFile = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: 512, // Resize to save data/storage
+        maxWidth: 512, 
         maxHeight: 512,
         imageQuality: 75,
       );
@@ -81,10 +82,10 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     if (user == null) return null;
 
     try {
-      // 1. Create a reference to "user_images/USER_ID.jpg"
+      // Correct Path: user_images/UID/profile.jpg (Matches your Security Rules)
       final storageRef = FirebaseStorage.instance
           .ref()
-          .child('user_images/${user!.uid}.jpg');
+          .child('user_images/${user!.uid}/profile.jpg');
       
       // 2. Upload the file
       await storageRef.putFile(_imageFile!);
@@ -94,7 +95,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
       return downloadUrl;
     } catch (e) {
       print("Storage Error: $e");
-      throw Exception("Image upload failed. Check your internet.");
+      throw Exception("Upload failed: $e"); 
     }
   }
 
@@ -140,16 +141,33 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    // Determine which image to show: Local File > Network URL > Default Icon
-    ImageProvider? backgroundImage;
+  // --- Helper Widget to display Image with Loading/Error states ---
+  Widget _getImageWidget() {
+    // 1. If user picked a new local file, show that
     if (_imageFile != null) {
-      backgroundImage = FileImage(_imageFile!);
-    } else if (_profileImageUrl != null) {
-      backgroundImage = NetworkImage(_profileImageUrl!);
+      return Image.file(_imageFile!, fit: BoxFit.cover);
+    }
+    
+    // 2. If we have a URL from Firebase, try to load it
+    if (_profileImageUrl != null && _profileImageUrl!.isNotEmpty) {
+      return CachedNetworkImage(
+        imageUrl: _profileImageUrl!,
+        fit: BoxFit.cover,
+        // Show a spinner while loading
+        placeholder: (context, url) => const Center(
+          child: CircularProgressIndicator(color: AppColors.accent),
+        ),
+        // Show the person icon if the URL fails (e.g. broken link)
+        errorWidget: (context, url, error) => const Icon(Icons.person, size: 60, color: Colors.white54),
+      );
     }
 
+    // 3. Default state (no image yet)
+    return const Icon(Icons.person, size: 60, color: Colors.white54);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Edit Profile"),
@@ -161,19 +179,26 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            // --- Profile Image Area ---
+            // --- Profile Image Area (Updated) ---
             Center(
               child: Stack(
                 children: [
-                  CircleAvatar(
-                    radius: 60,
-                    backgroundColor: Colors.grey[800],
-                    backgroundImage: backgroundImage,
-                    // Only show the person icon if there is no image to display
-                    child: backgroundImage == null 
-                        ? const Icon(Icons.person, size: 60, color: Colors.white54) 
-                        : null,
+                  Container(
+                    width: 120, // 2 * radius 60
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[800],
+                      shape: BoxShape.circle,
+                      // Optional: Add a border
+                      border: Border.all(color: AppColors.accent, width: 2), 
+                    ),
+                    // Use ClipOval to make the square image circular
+                    child: ClipOval(
+                      child: _getImageWidget(), 
+                    ),
                   ),
+                  
+                  // Camera Icon
                   Positioned(
                     bottom: 0,
                     right: 0,
@@ -182,7 +207,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       backgroundColor: AppColors.accent,
                       child: IconButton(
                         icon: const Icon(Icons.camera_alt, size: 18, color: Colors.black),
-                        onPressed: _pickImage, // TRIGGERS THE IMAGE PICKER
+                        onPressed: _pickImage, 
                       ),
                     ),
                   )
