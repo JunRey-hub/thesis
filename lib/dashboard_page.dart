@@ -50,13 +50,26 @@ class _MainScaffoldState extends State<MainScaffold> {
   /// Live listeners keyed by deviceId
   final Map<String, StreamSubscription> _deviceSubs = {};
 
+  /// Staleness timer — ticks every 10s to re-evaluate which devices are stale
+  Timer? _stalenessTimer;
+
+  /// A device is considered stale/disconnected if no packet in this duration
+  static const _staleThreshold = Duration(seconds: 60);
+
   // Convenience getters (first device, used by status card / geofence)
   String? get _pairedWristbandId =>
       _pairedDevices.isEmpty ? null : _pairedDevices.keys.first;
   String? get _wristbandLabel =>
       _pairedDevices.isEmpty ? null : _pairedDevices.values.first;
-  bool get _isWristbandOnline =>
-      _deviceOnline.values.any((v) => v == true);
+  bool get _isWristbandOnline {
+    if (_pairedDevices.isEmpty) return false;
+    final id = _pairedDevices.keys.first;
+    final isOnline = _deviceOnline[id] ?? false;
+    if (!isOnline) return false;
+    final lastSeen = _deviceLastSeen[id];
+    if (lastSeen == null) return false;
+    return DateTime.now().difference(lastSeen) <= _staleThreshold;
+  }
   int? get _wristbandBattery =>
       _pairedDevices.isEmpty ? null : _deviceBattery[_pairedDevices.keys.first];
   DateTime? get _wristbandLastSeen =>
@@ -83,11 +96,17 @@ class _MainScaffoldState extends State<MainScaffold> {
     _startTracking();
     _monitorConnection();
     _addLog("Guardian Authorized. System Online.");
+
+    // Staleness timer — refreshes UI every 10s so stale devices update promptly
+    _stalenessTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
+    _stalenessTimer?.cancel();
     for (final sub in _deviceSubs.values) sub.cancel();
     super.dispose();
   }
@@ -424,6 +443,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         deviceSpeeds: _deviceSpeed,
         pairedDevices: _pairedDevices,
         deviceOnlineMap: _deviceOnline,
+        deviceLastSeenMap: _deviceLastSeen,
+        staleThreshold: _staleThreshold,
         activeCenter: _activeCenter,
         radius: _geofenceRadius,
         isAnyBreach: anyBreach,
@@ -453,6 +474,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         guardianLocation: _myLocation,
         teamLocations: _teamLocations,
         pairedDevices: _pairedDevices,
+        deviceLastSeenMap: _deviceLastSeen,
+        staleThreshold: _staleThreshold,
         center: _activeCenter,
         radius: _geofenceRadius,
         geofenceMode: _geofenceMode,
@@ -568,8 +591,10 @@ class DashboardTab extends StatelessWidget {
   final google_maps.LatLng activeCenter;
   final Map<String, google_maps.LatLng> teamLocations;
   final Map<String, double?> deviceSpeeds;
-  final Map<String, String> pairedDevices;       // all paired: id → label
-  final Map<String, bool> deviceOnlineMap;       // id → online flag
+  final Map<String, String> pairedDevices;
+  final Map<String, bool> deviceOnlineMap;
+  final Map<String, DateTime?> deviceLastSeenMap;
+  final Duration staleThreshold;
   final double radius;
   final bool isAnyBreach;
   final String geofenceMode;
@@ -591,6 +616,8 @@ class DashboardTab extends StatelessWidget {
     required this.deviceSpeeds,
     required this.pairedDevices,
     required this.deviceOnlineMap,
+    required this.deviceLastSeenMap,
+    required this.staleThreshold,
     required this.radius,
     required this.isAnyBreach,
     required this.geofenceMode,
@@ -708,6 +735,82 @@ class DashboardTab extends StatelessWidget {
                           final label = pairedDevices[id] ?? id;
                           final hasLocation = teamLocations.containsKey(id);
                           final isOnline    = deviceOnlineMap[id] ?? false;
+                          final lastSeen    = deviceLastSeenMap[id];
+                          final isStale     = lastSeen == null
+                              ? false
+                              : DateTime.now().difference(lastSeen) > staleThreshold;
+
+                          // ── Stale / disconnected card ────────────────
+                          if (hasLocation && isStale) {
+                            final pos  = teamLocations[id]!;
+                            final dist = Geolocator.distanceBetween(
+                              pos.latitude, pos.longitude,
+                              activeCenter.latitude, activeCenter.longitude,
+                            );
+                            final ago = _formatLastSeen(lastSeen);
+                            return Container(
+                              width: 115,
+                              margin: const EdgeInsets.only(right: 10),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: c.card,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.grey.withOpacity(0.5),
+                                ),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      Icon(Icons.person_pin_circle,
+                                          color: Colors.grey.shade600, size: 22),
+                                      Positioned(
+                                        right: 0, bottom: 0,
+                                        child: Container(
+                                          width: 10, height: 10,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: Colors.grey,
+                                            border: Border.all(
+                                                color: c.card, width: 1.5),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    label,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: c.textPrimary,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    "${dist.toStringAsFixed(0)}m",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.grey,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    "Lost • $ago",
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontSize: 9,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }
 
                           // ── No location yet — show GPS search state ──
                           if (!hasLocation) {
@@ -1336,7 +1439,9 @@ class _ModeToggleButton extends StatelessWidget {
 class MapTab extends StatefulWidget {
   final google_maps.LatLng guardianLocation;
   final Map<String, google_maps.LatLng> teamLocations;
-  final Map<String, String> pairedDevices; // id → label
+  final Map<String, String> pairedDevices;
+  final Map<String, DateTime?> deviceLastSeenMap;
+  final Duration staleThreshold;
   final google_maps.LatLng center;
   final double radius;
   final String geofenceMode;
@@ -1347,6 +1452,8 @@ class MapTab extends StatefulWidget {
     required this.guardianLocation,
     required this.teamLocations,
     required this.pairedDevices,
+    required this.deviceLastSeenMap,
+    required this.staleThreshold,
     required this.center,
     required this.radius,
     required this.geofenceMode,
@@ -1373,6 +1480,13 @@ class _MapTabState extends State<MapTab> {
     _mapController?.animateCamera(
       google_maps.CameraUpdate.newLatLngZoom(widget.guardianLocation, 18),
     );
+  }
+
+  String _formatAgo(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 60) return "${diff.inSeconds}s ago";
+    if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
+    return "${diff.inHours}h ago";
   }
 
   @override
@@ -1418,21 +1532,37 @@ class _MapTabState extends State<MapTab> {
         pos.latitude, pos.longitude,
         widget.center.latitude, widget.center.longitude,
       );
-      final isSafe = dist <= widget.radius;
-      final label  = widget.pairedDevices[id] ?? id; // show user-set name, fallback to ID
+      final isSafe   = dist <= widget.radius;
+      final label    = widget.pairedDevices[id] ?? id;
+      final lastSeen = widget.deviceLastSeenMap[id];
+      final isStale  = lastSeen == null
+          ? false
+          : DateTime.now().difference(lastSeen) > widget.staleThreshold;
+
+      // Stale = grey marker; safe = green; breach = red
+      final double markerHue = isStale
+          ? google_maps.BitmapDescriptor.hueViolet   // grey-ish to signal lost contact
+          : (isSafe ? 120.0 : 0.0);
+
+      final String snippet;
+      if (isStale) {
+        final ago = lastSeen == null ? 'unknown' : _formatAgo(lastSeen);
+        snippet = "⚠ Disconnected · Last seen $ago";
+      } else if (isSafe) {
+        snippet = "Safe (${dist.toStringAsFixed(0)}m)";
+      } else {
+        snippet = "BREACH (${dist.toStringAsFixed(0)}m away)";
+      }
 
       markers.add(
         google_maps.Marker(
           markerId: google_maps.MarkerId(id),
           position: pos,
-          icon: google_maps.BitmapDescriptor.defaultMarkerWithHue(
-            isSafe ? 120.0 : 0.0,
-          ),
+          icon: google_maps.BitmapDescriptor.defaultMarkerWithHue(markerHue),
+          alpha: isStale ? 0.5 : 1.0,   // fade out stale marker
           infoWindow: google_maps.InfoWindow(
-            title: label,
-            snippet: isSafe
-                ? "Safe (${dist.toStringAsFixed(0)}m)"
-                : "BREACH (${dist.toStringAsFixed(0)}m away)",
+            title: isStale ? "$label  ⚠ OFFLINE" : label,
+            snippet: snippet,
           ),
         ),
       );
