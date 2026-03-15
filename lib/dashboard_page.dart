@@ -475,6 +475,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         pairedDevices: _pairedDevices,
         deviceOnlineMap: _deviceOnline,
         deviceLastSeenMap: _deviceLastSeen,
+        deviceBatteryMap: _deviceBattery,
         staleThreshold: _staleThreshold,
         activeCenter: _activeCenter,
         radius: _geofenceRadius,
@@ -640,6 +641,7 @@ class DashboardTab extends StatelessWidget {
   final Map<String, String> pairedDevices;
   final Map<String, bool> deviceOnlineMap;
   final Map<String, DateTime?> deviceLastSeenMap;
+  final Map<String, int?> deviceBatteryMap;
   final Duration staleThreshold;
   final double radius;
   final bool isAnyBreach;
@@ -664,6 +666,7 @@ class DashboardTab extends StatelessWidget {
     required this.pairedDevices,
     required this.deviceOnlineMap,
     required this.deviceLastSeenMap,
+    required this.deviceBatteryMap,
     required this.staleThreshold,
     required this.radius,
     required this.isAnyBreach,
@@ -717,19 +720,19 @@ class DashboardTab extends StatelessWidget {
             children: [
               const SizedBox(height: 4),
 
-              // ── Wristband Status Card ─────────────────────────────
-              if (pairedWristbandId == null)
+              // ── Wristband Status Cards (swipeable) ───────────────
+              if (pairedDevices.isEmpty)
                 _NoPairingBanner(context: context)
               else
-                _WristbandStatusCard(
-                  label: wristbandLabel ?? 'Wristband',
-                  deviceId: pairedWristbandId!,
-                  isOnline: isWristbandOnline,
-                  battery: wristbandBattery,
-                  lastSeen: wristbandLastSeen,
-                  batteryColor: _batteryColor(wristbandBattery),
-                  batteryIcon: _batteryIcon(wristbandBattery),
-                  formatLastSeen: _formatLastSeen,
+                _SwipeableWristbandCards(
+                  pairedDevices:    pairedDevices,
+                  deviceOnlineMap:  deviceOnlineMap,
+                  deviceLastSeenMap: deviceLastSeenMap,
+                  deviceBatteryMap:  deviceBatteryMap,
+                  staleThreshold:   staleThreshold,
+                  formatLastSeen:   _formatLastSeen,
+                  batteryColor:     _batteryColor,
+                  batteryIcon:      _batteryIcon,
                 ),
 
               const SizedBox(height: 16),
@@ -1134,6 +1137,106 @@ class DashboardTab extends StatelessWidget {
 }
 
 // ─── Sub-widgets ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SWIPEABLE WRISTBAND STATUS CARDS
+// ─────────────────────────────────────────────────────────────────────────────
+class _SwipeableWristbandCards extends StatefulWidget {
+  final Map<String, String> pairedDevices;
+  final Map<String, bool> deviceOnlineMap;
+  final Map<String, DateTime?> deviceLastSeenMap;
+  final Map<String, int?> deviceBatteryMap;
+  final Duration staleThreshold;
+  final String Function(DateTime?) formatLastSeen;
+  final Color Function(int?) batteryColor;
+  final IconData Function(int?) batteryIcon;
+
+  const _SwipeableWristbandCards({
+    required this.pairedDevices,
+    required this.deviceOnlineMap,
+    required this.deviceLastSeenMap,
+    required this.deviceBatteryMap,
+    required this.staleThreshold,
+    required this.formatLastSeen,
+    required this.batteryColor,
+    required this.batteryIcon,
+  });
+
+  @override
+  State<_SwipeableWristbandCards> createState() =>
+      _SwipeableWristbandCardsState();
+}
+
+class _SwipeableWristbandCardsState extends State<_SwipeableWristbandCards> {
+  final PageController _pageController = PageController();
+  int _currentPage = 0;
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ids    = widget.pairedDevices.keys.toList();
+    final single = ids.length == 1;
+
+    return Column(
+      children: [
+        SizedBox(
+          height: 80,
+          child: PageView.builder(
+            controller: _pageController,
+            itemCount: ids.length,
+            onPageChanged: (i) => setState(() => _currentPage = i),
+            itemBuilder: (context, index) {
+              final id       = ids[index];
+              final label    = widget.pairedDevices[id] ?? id;
+              final lastSeen = widget.deviceLastSeenMap[id];
+              final isStale  = lastSeen != null &&
+                  DateTime.now().difference(lastSeen) > widget.staleThreshold;
+              final isOnline = !isStale && (widget.deviceOnlineMap[id] ?? false);
+              final battery  = widget.deviceBatteryMap[id];
+
+              return _WristbandStatusCard(
+                label:          label,
+                deviceId:       id,
+                isOnline:       isOnline,
+                battery:        battery,
+                lastSeen:       lastSeen,
+                batteryColor:   widget.batteryColor(battery),
+                batteryIcon:    widget.batteryIcon(battery),
+                formatLastSeen: widget.formatLastSeen,
+              );
+            },
+          ),
+        ),
+
+        // Dot indicators — only show when more than one device
+        if (!single) ...[
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(ids.length, (i) {
+              final c = AppColorScheme.of(context);
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width:  _currentPage == i ? 16 : 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: _currentPage == i ? c.accent : c.border,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              );
+            }),
+          ),
+        ],
+      ],
+    );
+  }
+}
 
 class _NoPairingBanner extends StatelessWidget {
   final BuildContext context;
