@@ -43,6 +43,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   Map<String, bool> _deviceOnline = {};
   /// Per-device battery %
   Map<String, int?> _deviceBattery = {};
+  /// Per-device speed km/h
+  Map<String, double?> _deviceSpeed = {};
   /// Per-device last seen
   Map<String, DateTime?> _deviceLastSeen = {};
   /// Live listeners keyed by deviceId
@@ -112,6 +114,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         _teamLocations.clear();
         _deviceOnline.clear();
         _deviceBattery.clear();
+        _deviceSpeed.clear();
         _deviceLastSeen.clear();
         _previousUserStatus.clear();
       });
@@ -292,6 +295,12 @@ class _MainScaffoldState extends State<MainScaffold> {
                 (payload['battery'] ?? payload['Battery']).toString())
             : null;
 
+        // Speed (km/h)
+        double? speed = (payload['speed'] ?? payload['Speed']) != null
+            ? double.tryParse(
+                (payload['speed'] ?? payload['Speed']).toString())
+            : null;
+
         // Timestamp — supports epoch ms (int) OR string date "YYYY-MM-DD HH:MM:SS"
         DateTime? lastSeen;
         final tsRaw = payload['timestamp'] ?? payload['Timestamp'] ??
@@ -335,6 +344,7 @@ class _MainScaffoldState extends State<MainScaffold> {
             _teamLocations[wristbandId]   = wristbandPos;
             _deviceOnline[wristbandId]    = true;
             _deviceBattery[wristbandId]   = battery;
+            _deviceSpeed[wristbandId]     = speed;
             _deviceLastSeen[wristbandId]  = lastSeen;
           });
         }
@@ -411,6 +421,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       DashboardTab(
         guardianLocation: _myLocation,
         teamLocations: _teamLocations,
+        deviceSpeeds: _deviceSpeed,
         activeCenter: _activeCenter,
         radius: _geofenceRadius,
         isAnyBreach: anyBreach,
@@ -554,6 +565,7 @@ class DashboardTab extends StatelessWidget {
   final google_maps.LatLng guardianLocation;
   final google_maps.LatLng activeCenter;
   final Map<String, google_maps.LatLng> teamLocations;
+  final Map<String, double?> deviceSpeeds;   // deviceId → speed km/h
   final double radius;
   final bool isAnyBreach;
   final String geofenceMode;
@@ -572,6 +584,7 @@ class DashboardTab extends StatelessWidget {
     required this.guardianLocation,
     required this.activeCenter,
     required this.teamLocations,
+    required this.deviceSpeeds,
     required this.radius,
     required this.isAnyBreach,
     required this.geofenceMode,
@@ -673,7 +686,7 @@ class DashboardTab extends StatelessWidget {
               const SizedBox(height: 10),
 
               SizedBox(
-                height: 90,
+                height: 115,
                 child: teamLocations.isEmpty
                     ? Center(
                         child: Text(
@@ -694,9 +707,32 @@ class DashboardTab extends StatelessWidget {
                             activeCenter.latitude, activeCenter.longitude,
                           );
                           final safe = dist <= radius;
+                          final speed = deviceSpeeds[id];
+
+                          // Movement state based on speed
+                          final IconData moveIcon;
+                          final String moveLabel;
+                          final Color moveColor;
+                          if (speed == null) {
+                            moveIcon  = Icons.device_unknown_outlined;
+                            moveLabel = '—';
+                            moveColor = Colors.grey;
+                          } else if (speed < 1.0) {
+                            moveIcon  = Icons.accessibility_new;
+                            moveLabel = 'Still';
+                            moveColor = Colors.grey;
+                          } else if (speed < 7.0) {
+                            moveIcon  = Icons.directions_walk;
+                            moveLabel = 'Walking';
+                            moveColor = Colors.orange;
+                          } else {
+                            moveIcon  = Icons.directions_run;
+                            moveLabel = 'Running';
+                            moveColor = Colors.redAccent;
+                          }
 
                           return Container(
-                            width: 100,
+                            width: 110,
                             margin: const EdgeInsets.only(right: 10),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
@@ -711,21 +747,23 @@ class DashboardTab extends StatelessWidget {
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(
-                                  safe
-                                      ? Icons.person_pin_circle
-                                      : Icons.warning_rounded,
-                                  color: safe ? c.success : c.danger,
-                                  size: 28,
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      safe ? Icons.person_pin_circle : Icons.warning_rounded,
+                                      color: safe ? c.success : c.danger,
+                                      size: 20,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(moveIcon, color: moveColor, size: 18),
+                                  ],
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
                                   wristbandLabel ?? id,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: c.textPrimary,
-                                  ),
+                                  style: TextStyle(fontSize: 11, color: c.textPrimary),
                                 ),
                                 Text(
                                   "${dist.toStringAsFixed(0)}m",
@@ -733,6 +771,14 @@ class DashboardTab extends StatelessWidget {
                                     fontSize: 11,
                                     color: safe ? c.success : c.danger,
                                     fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  moveLabel,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: moveColor,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],
