@@ -422,6 +422,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         guardianLocation: _myLocation,
         teamLocations: _teamLocations,
         deviceSpeeds: _deviceSpeed,
+        pairedDevices: _pairedDevices,
+        deviceOnlineMap: _deviceOnline,
         activeCenter: _activeCenter,
         radius: _geofenceRadius,
         isAnyBreach: anyBreach,
@@ -565,7 +567,9 @@ class DashboardTab extends StatelessWidget {
   final google_maps.LatLng guardianLocation;
   final google_maps.LatLng activeCenter;
   final Map<String, google_maps.LatLng> teamLocations;
-  final Map<String, double?> deviceSpeeds;   // deviceId → speed km/h
+  final Map<String, double?> deviceSpeeds;
+  final Map<String, String> pairedDevices;       // all paired: id → label
+  final Map<String, bool> deviceOnlineMap;       // id → online flag
   final double radius;
   final bool isAnyBreach;
   final String geofenceMode;
@@ -585,6 +589,8 @@ class DashboardTab extends StatelessWidget {
     required this.activeCenter,
     required this.teamLocations,
     required this.deviceSpeeds,
+    required this.pairedDevices,
+    required this.deviceOnlineMap,
     required this.radius,
     required this.isAnyBreach,
     required this.geofenceMode,
@@ -687,39 +693,103 @@ class DashboardTab extends StatelessWidget {
 
               SizedBox(
                 height: 115,
-                child: teamLocations.isEmpty
+                child: pairedDevices.isEmpty
                     ? Center(
                         child: Text(
-                          pairedWristbandId != null
-                              ? "Waiting for wristband signal…"
-                              : "No device paired.",
+                          "No device paired.",
                           style: TextStyle(color: c.textSecondary),
                         ),
                       )
                     : ListView.builder(
                         scrollDirection: Axis.horizontal,
-                        itemCount: teamLocations.length,
+                        itemCount: pairedDevices.length,
                         itemBuilder: (context, index) {
-                          final id = teamLocations.keys.elementAt(index);
-                          final pos = teamLocations[id]!;
+                          final id    = pairedDevices.keys.elementAt(index);
+                          final label = pairedDevices[id] ?? id;
+                          final hasLocation = teamLocations.containsKey(id);
+                          final isOnline    = deviceOnlineMap[id] ?? false;
+
+                          // ── No location yet — show GPS search state ──
+                          if (!hasLocation) {
+                            return Container(
+                              width: 115,
+                              margin: const EdgeInsets.only(right: 10),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: c.card,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: c.border.withOpacity(0.4),
+                                ),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: isOnline
+                                          ? Colors.orange
+                                          : c.textSecondary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    label,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: c.textPrimary,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    isOnline
+                                        ? "Searching GPS…"
+                                        : "Waiting for device…",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: isOnline
+                                          ? Colors.orange
+                                          : c.textSecondary,
+                                    ),
+                                  ),
+                                  if (isOnline)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        "Go outdoors",
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          color: c.textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          }
+
+                          // ── Has location — normal card ───────────────
+                          final pos  = teamLocations[id]!;
                           final dist = Geolocator.distanceBetween(
                             pos.latitude, pos.longitude,
                             activeCenter.latitude, activeCenter.longitude,
                           );
-                          final safe = dist <= radius;
+                          final safe  = dist <= radius;
                           final speed = deviceSpeeds[id];
 
-                          // Movement state based on speed
                           final IconData moveIcon;
                           final String moveLabel;
                           final Color moveColor;
-                          if (speed == null) {
-                            moveIcon  = Icons.device_unknown_outlined;
-                            moveLabel = '—';
-                            moveColor = Colors.grey;
-                          } else if (speed < 1.0) {
+                          if (speed == null || speed < 1.0) {
                             moveIcon  = Icons.accessibility_new;
-                            moveLabel = 'Still';
+                            moveLabel = speed == null ? '—' : 'Still';
                             moveColor = Colors.grey;
                           } else if (speed < 7.0) {
                             moveIcon  = Icons.directions_walk;
@@ -732,7 +802,7 @@ class DashboardTab extends StatelessWidget {
                           }
 
                           return Container(
-                            width: 110,
+                            width: 115,
                             margin: const EdgeInsets.only(right: 10),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
@@ -761,9 +831,13 @@ class DashboardTab extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  wristbandLabel ?? id,
+                                  label,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(fontSize: 11, color: c.textPrimary),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: c.textPrimary,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                                 Text(
                                   "${dist.toStringAsFixed(0)}m",
