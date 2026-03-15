@@ -195,10 +195,16 @@ class _SettingsPageState extends State<SettingsPage> {
                     color: c.isDark ? Colors.grey[800] : Colors.grey[200],
                   ),
                   child: ClipOval(
-                    child: _profileImageUrl != null
+                    child: _profileImageUrl != null &&
+                            _profileImageUrl!.isNotEmpty
                         ? CachedNetworkImage(
                             imageUrl: _profileImageUrl!,
+                            cacheKey: FirebaseAuth.instance.currentUser?.uid,
                             fit: BoxFit.cover,
+                            placeholder: (_, __) => Icon(
+                              Icons.person,
+                              color: c.textSecondary,
+                            ),
                             errorWidget: (_, __, ___) =>
                                 Icon(Icons.person, color: c.textSecondary),
                           )

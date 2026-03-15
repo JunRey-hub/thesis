@@ -21,6 +21,7 @@ class MainScaffold extends StatefulWidget {
 
 class _MainScaffoldState extends State<MainScaffold> {
   int _currentIndex = 0;
+  String? _focusDeviceId;   // set when tapping a device in Target Status
 
   // ── Location State ────────────────────────────────────────────────
   StreamSubscription<Position>? _positionStream;
@@ -468,6 +469,12 @@ class _MainScaffoldState extends State<MainScaffold> {
           _saveGeofenceSettings();
         },
         onViewMap: () => setState(() => _currentIndex = 1),
+        onDeviceTap: (deviceId) {
+          setState(() {
+            _currentIndex    = 1;
+            _focusDeviceId   = deviceId;
+          });
+        },
         onSOS: _triggerSOS,
       ),
       MapTab(
@@ -476,6 +483,8 @@ class _MainScaffoldState extends State<MainScaffold> {
         pairedDevices: _pairedDevices,
         deviceLastSeenMap: _deviceLastSeen,
         staleThreshold: _staleThreshold,
+        focusDeviceId: _focusDeviceId,
+        onFocusConsumed: () => setState(() => _focusDeviceId = null),
         center: _activeCenter,
         radius: _geofenceRadius,
         geofenceMode: _geofenceMode,
@@ -532,10 +541,17 @@ class _MainScaffoldState extends State<MainScaffold> {
                   color: c.card,
                 ),
                 child: ClipOval(
-                  child: _profileImageUrl != null
+                  child: _profileImageUrl != null &&
+                          _profileImageUrl!.isNotEmpty
                       ? CachedNetworkImage(
                           imageUrl: _profileImageUrl!,
+                          cacheKey: FirebaseAuth.instance.currentUser?.uid,
                           fit: BoxFit.cover,
+                          placeholder: (_, __) => Icon(
+                            Icons.person,
+                            color: c.textSecondary,
+                            size: 20,
+                          ),
                           errorWidget: (_, __, ___) => Icon(
                             Icons.person,
                             color: c.textSecondary,
@@ -607,6 +623,7 @@ class DashboardTab extends StatelessWidget {
   final ValueChanged<String> onGeofenceModeChanged;
   final VoidCallback onViewMap;
   final VoidCallback onSOS;
+  final ValueChanged<String> onDeviceTap;   // tapped device id → go to map
 
   const DashboardTab({
     super.key,
@@ -625,6 +642,7 @@ class DashboardTab extends StatelessWidget {
     required this.onGeofenceModeChanged,
     required this.onViewMap,
     required this.onSOS,
+    required this.onDeviceTap,
     this.pairedWristbandId,
     this.wristbandLabel,
     this.wristbandLastSeen,
@@ -719,7 +737,7 @@ class DashboardTab extends StatelessWidget {
               const SizedBox(height: 10),
 
               SizedBox(
-                height: 115,
+                height: 128,
                 child: pairedDevices.isEmpty
                     ? Center(
                         child: Text(
@@ -748,7 +766,9 @@ class DashboardTab extends StatelessWidget {
                               activeCenter.latitude, activeCenter.longitude,
                             );
                             final ago = _formatLastSeen(lastSeen);
-                            return Container(
+                            return GestureDetector(
+                              onTap: () => onDeviceTap(id),
+                              child: Container(
                               width: 115,
                               margin: const EdgeInsets.only(right: 10),
                               padding: const EdgeInsets.all(10),
@@ -809,7 +829,8 @@ class DashboardTab extends StatelessWidget {
                                   ),
                                 ],
                               ),
-                            );
+                            ), // Container
+                            ); // GestureDetector
                           }
 
                           // ── No location yet — show GPS search state ──
@@ -904,7 +925,9 @@ class DashboardTab extends StatelessWidget {
                             moveColor = Colors.redAccent;
                           }
 
-                          return Container(
+                          return GestureDetector(
+                            onTap: () => onDeviceTap(id),
+                            child: Container(
                             width: 115,
                             margin: const EdgeInsets.only(right: 10),
                             padding: const EdgeInsets.all(10),
@@ -958,9 +981,18 @@ class DashboardTab extends StatelessWidget {
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  "Tap to locate",
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: c.textSecondary,
+                                  ),
+                                ),
                               ],
                             ),
-                          );
+                          ), // Container
+                          ); // GestureDetector
                         },
                       ),
               ),
@@ -1442,6 +1474,8 @@ class MapTab extends StatefulWidget {
   final Map<String, String> pairedDevices;
   final Map<String, DateTime?> deviceLastSeenMap;
   final Duration staleThreshold;
+  final String? focusDeviceId;       // set to animate camera to a device
+  final VoidCallback? onFocusConsumed; // called after camera animates
   final google_maps.LatLng center;
   final double radius;
   final String geofenceMode;
@@ -1454,6 +1488,8 @@ class MapTab extends StatefulWidget {
     required this.pairedDevices,
     required this.deviceLastSeenMap,
     required this.staleThreshold,
+    this.focusDeviceId,
+    this.onFocusConsumed,
     required this.center,
     required this.radius,
     required this.geofenceMode,
@@ -1487,6 +1523,25 @@ class _MapTabState extends State<MapTab> {
     if (diff.inSeconds < 60) return "${diff.inSeconds}s ago";
     if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
     return "${diff.inHours}h ago";
+  }
+
+  @override
+  void didUpdateWidget(MapTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusDeviceId != null &&
+        widget.focusDeviceId != oldWidget.focusDeviceId) {
+      // Small delay so the map has time to finish rendering after tab switch
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (!mounted) return;
+        final pos = widget.teamLocations[widget.focusDeviceId];
+        if (pos != null) {
+          _mapController?.animateCamera(
+            google_maps.CameraUpdate.newLatLngZoom(pos, 18),
+          );
+        }
+      });
+      widget.onFocusConsumed?.call();
+    }
   }
 
   @override
@@ -1586,7 +1641,23 @@ class _MapTabState extends State<MapTab> {
               strokeWidth: 2,
             ),
           },
-          onMapCreated: (ctrl) => _mapController = ctrl,
+          onMapCreated: (ctrl) {
+            _mapController = ctrl;
+            // If a device was already focused before map was ready, fly to it now
+            if (widget.focusDeviceId != null) {
+              final pos = widget.teamLocations[widget.focusDeviceId];
+              if (pos != null) {
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  if (mounted) {
+                    _mapController?.animateCamera(
+                      google_maps.CameraUpdate.newLatLngZoom(pos, 18),
+                    );
+                  }
+                });
+              }
+              widget.onFocusConsumed?.call();
+            }
+          },
           mapType: _mapType,
           // Tap on map to reposition fixed geofence
           onTap: widget.geofenceMode == 'fixed'
