@@ -54,6 +54,9 @@ class _MainScaffoldState extends State<MainScaffold> {
   /// Staleness timer — ticks every 10s to re-evaluate which devices are stale
   Timer? _stalenessTimer;
 
+  /// Per-device breach vibration timers — vibrate every 5s while outside geofence
+  final Map<String, Timer> _breachTimers = {};
+
   /// A device is considered stale/disconnected if no packet in this duration
   static const _staleThreshold = Duration(seconds: 60);
 
@@ -108,6 +111,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   void dispose() {
     _positionStream?.cancel();
     _stalenessTimer?.cancel();
+    for (final t in _breachTimers.values) t.cancel();
+    _breachTimers.clear();
     for (final sub in _deviceSubs.values) sub.cancel();
     super.dispose();
   }
@@ -128,6 +133,10 @@ class _MainScaffoldState extends State<MainScaffold> {
       // Cancel old device listeners before reloading
       for (final sub in _deviceSubs.values) await sub.cancel();
       _deviceSubs.clear();
+
+      // Cancel any active breach vibration timers
+      for (final t in _breachTimers.values) t.cancel();
+      _breachTimers.clear();
 
       // Clear all stale device state so unpaired devices disappear immediately
       setState(() {
@@ -346,17 +355,38 @@ class _MainScaffoldState extends State<MainScaffold> {
           final isSafe  = distFromCenter <= _geofenceRadius;
           final wasSafe = _previousUserStatus[wristbandId] ?? true;
 
-          if (isSafe != wasSafe && _alertsEnabled) {
+          if (_alertsEnabled) {
             final devLabel = _pairedDevices[wristbandId] ?? wristbandId;
             if (!isSafe) {
-              _addLog(
-                "ALERT: [$devLabel] exited Safe Zone "
-                "(${distFromCenter.toStringAsFixed(1)}m from center)",
-              );
-              HapticFeedback.heavyImpact();
+              // Log once when child first exits
+              if (isSafe != wasSafe) {
+                _addLog(
+                  "ALERT: [$devLabel] exited Safe Zone "
+                  "(${distFromCenter.toStringAsFixed(1)}m from center)",
+                );
+                // Start a 5-second vibration timer for this device
+                _breachTimers[wristbandId]?.cancel();
+                _breachTimers[wristbandId] = Timer.periodic(
+                  const Duration(seconds: 5),
+                  (_) {
+                    if (mounted) HapticFeedback.heavyImpact();
+                  },
+                );
+                // Vibrate immediately on first detection too
+                HapticFeedback.heavyImpact();
+              }
             } else {
-              _addLog("[$devLabel] returned to Safe Zone.");
+              // Child returned inside — stop vibrating
+              if (isSafe != wasSafe) {
+                _breachTimers[wristbandId]?.cancel();
+                _breachTimers.remove(wristbandId);
+                _addLog("[$devLabel] returned to Safe Zone.");
+              }
             }
+          } else {
+            // Alerts disabled — make sure any running timers are stopped
+            _breachTimers[wristbandId]?.cancel();
+            _breachTimers.remove(wristbandId);
           }
           _previousUserStatus[wristbandId] = isSafe;
 
