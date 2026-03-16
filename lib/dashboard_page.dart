@@ -665,7 +665,10 @@ class _MainScaffoldState extends State<MainScaffold> {
         ],
       ),
       backgroundColor: c.background,
-      body: pages[_currentIndex],
+      body: IndexedStack(
+        index: _currentIndex,
+        children: pages,
+      ),
       bottomNavigationBar: NavigationBar(
         height: 65,
         backgroundColor: c.background,
@@ -1671,13 +1674,24 @@ class MapTab extends StatefulWidget {
   State<MapTab> createState() => _MapTabState();
 }
 
-class _MapTabState extends State<MapTab> {
+class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
   google_maps.GoogleMapController? _mapController;
   google_maps.MapType _mapType = google_maps.MapType.normal;
+  google_maps.CameraPosition? _lastCameraPosition;   // remembers last view
+  int _targetCycleIndex = 0;   // cycles through wristbands on each button press
+  bool _hasCenteredOnGuardian = false;  // only auto-center once on first real fix
+
+  // Keep this widget alive when switching tabs — never dispose and rebuild
+  @override
+  bool get wantKeepAlive => true;
 
   void _centerOnTarget() {
     if (widget.teamLocations.isEmpty) return;
-    final pos = widget.teamLocations.values.first;
+    final ids = widget.teamLocations.keys.toList();
+    _targetCycleIndex = _targetCycleIndex % ids.length;
+    final id  = ids[_targetCycleIndex];
+    final pos = widget.teamLocations[id]!;
+    _targetCycleIndex = (_targetCycleIndex + 1) % ids.length;
     _mapController?.animateCamera(
       google_maps.CameraUpdate.newLatLngZoom(pos, 18),
     );
@@ -1699,9 +1713,23 @@ class _MapTabState extends State<MapTab> {
   @override
   void didUpdateWidget(MapTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    // Auto-center on guardian the first time a real GPS fix arrives
+    // (not the default 9.3068, 123.3054 seed value)
+    if (!_hasCenteredOnGuardian && _lastCameraPosition == null) {
+      final isDefault = widget.guardianLocation.latitude == 9.3068 &&
+                        widget.guardianLocation.longitude == 123.3054;
+      if (!isDefault && widget.guardianLocation != oldWidget.guardianLocation) {
+        _hasCenteredOnGuardian = true;
+        _mapController?.animateCamera(
+          google_maps.CameraUpdate.newLatLngZoom(widget.guardianLocation, 18),
+        );
+      }
+    }
+
+    // Animate to device when focusDeviceId is set
     if (widget.focusDeviceId != null &&
         widget.focusDeviceId != oldWidget.focusDeviceId) {
-      // Small delay so the map has time to finish rendering after tab switch
       Future.delayed(const Duration(milliseconds: 400), () {
         if (!mounted) return;
         final pos = widget.teamLocations[widget.focusDeviceId];
@@ -1717,6 +1745,7 @@ class _MapTabState extends State<MapTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // required by AutomaticKeepAliveClientMixin
     final Set<google_maps.Marker> markers = {};
 
     // Guardian marker
@@ -1797,8 +1826,8 @@ class _MapTabState extends State<MapTab> {
     return Stack(
       children: [
         google_maps.GoogleMap(
-          initialCameraPosition: google_maps.CameraPosition(
-            target: widget.center,
+          initialCameraPosition: _lastCameraPosition ?? google_maps.CameraPosition(
+            target: widget.guardianLocation,   // start at guardian on first open
             zoom: 18,
           ),
           markers: markers,
@@ -1811,6 +1840,22 @@ class _MapTabState extends State<MapTab> {
               strokeColor: const Color(0xFF58A6FF),
               strokeWidth: 2,
             ),
+          },
+          onCameraIdle: () async {
+            // Save whatever position the user last left the map at
+            final pos = await _mapController?.getVisibleRegion();
+            if (pos != null) {
+              final zoom = await _mapController?.getZoomLevel();
+              if (mounted) {
+                _lastCameraPosition = google_maps.CameraPosition(
+                  target: google_maps.LatLng(
+                    (pos.northeast.latitude + pos.southwest.latitude) / 2,
+                    (pos.northeast.longitude + pos.southwest.longitude) / 2,
+                  ),
+                  zoom: zoom ?? 18,
+                );
+              }
+            }
           },
           onMapCreated: (ctrl) {
             _mapController = ctrl;
