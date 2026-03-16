@@ -590,13 +590,6 @@ class _MainScaffoldState extends State<MainScaffold> {
           });
           _saveGeofenceSettings();
           _addLog("Geofence center set at (${latlng.latitude.toStringAsFixed(4)}, ${latlng.longitude.toStringAsFixed(4)})");
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text("Fixed geofence center updated."),
-              backgroundColor: AppColorScheme.of(context).accent,
-              duration: const Duration(seconds: 2),
-            ),
-          );
         },
       ),
       LogsTab(logs: _activityLogs),
@@ -1552,7 +1545,7 @@ class _GeofenceControlCard extends StatelessWidget {
               child: GestureDetector(
                 onTap: onViewMap,
                 child: Text(
-                  "→ Go to Map: drag the pin or tap to reposition",
+                  "→ Go to Map: tap to place • long press pin to drag",
                   style: TextStyle(
                     color: c.accent,
                     fontSize: 12,
@@ -1680,6 +1673,8 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
   google_maps.CameraPosition? _lastCameraPosition;   // remembers last view
   int _targetCycleIndex = 0;   // cycles through wristbands on each button press
   bool _hasCenteredOnGuardian = false;  // only auto-center once on first real fix
+  bool _geofenceLocked = true;   // locked by default — must unlock to move geofence
+  bool _geofenceJustUpdated = false;   // briefly true after center is moved
 
   // Keep this widget alive when switching tabs — never dispose and rebuild
   @override
@@ -1708,6 +1703,14 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
     if (diff.inSeconds < 60) return "${diff.inSeconds}s ago";
     if (diff.inMinutes < 60) return "${diff.inMinutes}m ago";
     return "${diff.inHours}h ago";
+  }
+
+  void _onCenterMoved(google_maps.LatLng latlng) {
+    widget.onSetFixedCenter(latlng);
+    setState(() => _geofenceJustUpdated = true);
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _geofenceJustUpdated = false);
+    });
   }
 
   @override
@@ -1771,11 +1774,11 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
           ),
           infoWindow: const google_maps.InfoWindow(
             title: "Geofence Center",
-            snippet: "Drag to reposition",
+            snippet: "Long press to drag • Tap map to place",
           ),
           alpha: 0.9,
-          draggable: true,
-          onDragEnd: (newPos) => widget.onSetFixedCenter(newPos),
+          draggable: !_geofenceLocked,
+          onDragEnd: (newPos) => _onCenterMoved(newPos),
           onDragStart: (_) => HapticFeedback.mediumImpact(),
         ),
       );
@@ -1875,9 +1878,9 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
             }
           },
           mapType: _mapType,
-          // Tap on map to reposition fixed geofence
-          onTap: widget.geofenceMode == 'fixed'
-              ? (latlng) => widget.onSetFixedCenter(latlng)
+          // Tap anywhere on map to reposition fixed geofence center (only when unlocked)
+          onTap: (widget.geofenceMode == 'fixed' && !_geofenceLocked)
+              ? (latlng) => _onCenterMoved(latlng)
               : null,
           myLocationEnabled: true,
           myLocationButtonEnabled: false,
@@ -1933,12 +1936,37 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
                 tooltip: "Center on me",
                 child: const Icon(Icons.my_location, color: Color(0xFF58A6FF)),
               ),
+
+              // Lock / Unlock geofence — only shown in fixed mode
+              if (widget.geofenceMode == 'fixed') ...[
+                const SizedBox(height: 8),
+                FloatingActionButton.small(
+                  heroTag: "geofence_lock",
+                  backgroundColor: _geofenceLocked
+                      ? const Color(0xFF1C2128)
+                      : Colors.orange.withOpacity(0.9),
+                  onPressed: () {
+                    setState(() => _geofenceLocked = !_geofenceLocked);
+                    HapticFeedback.lightImpact();
+                  },
+                  tooltip: _geofenceLocked
+                      ? "Unlock geofence to move it"
+                      : "Lock geofence position",
+                  child: Icon(
+                    _geofenceLocked ? Icons.lock : Icons.lock_open,
+                    color: _geofenceLocked
+                        ? const Color(0xFF58A6FF)
+                        : Colors.white,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
 
-        // ── Fixed mode instruction banner ───────────────────────
-        if (widget.geofenceMode == 'fixed')
+        // ── Fixed mode top banner ────────────────────────────────
+        // Shows lock hint when locked, confirmation when center just moved
+        if (widget.geofenceMode == 'fixed' && (_geofenceLocked || _geofenceJustUpdated))
           Positioned(
             top: 16,
             left: 0,
@@ -1950,17 +1978,27 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
                   vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF161B22).withOpacity(0.9),
+                  color: _geofenceJustUpdated
+                      ? const Color(0xFF1E6F2E).withOpacity(0.95)
+                      : const Color(0xFF161B22).withOpacity(0.9),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.drag_indicator, color: const Color(0xFF58A6FF), size: 16),
-                    SizedBox(width: 6),
+                    Icon(
+                      _geofenceJustUpdated ? Icons.check_circle : Icons.lock,
+                      color: _geofenceJustUpdated
+                          ? Colors.white
+                          : const Color(0xFF58A6FF),
+                      size: 14,
+                    ),
+                    const SizedBox(width: 6),
                     Text(
-                      "Drag the pin  •  or tap to place it",
-                      style: TextStyle(color: Colors.white70, fontSize: 12), // map banner - always on dark overlay
+                      _geofenceJustUpdated
+                          ? "Geofence center updated"
+                          : "Tap the lock button to move the geofence",
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
                   ],
                 ),
@@ -2087,6 +2125,6 @@ class LogsTab extends StatelessWidget {
           ],
         ),
       ),
-    );
+    );  
   }
 }
