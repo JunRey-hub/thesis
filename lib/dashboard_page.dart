@@ -1741,8 +1741,10 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
             google_maps.CameraUpdate.newLatLngZoom(pos, 18),
           );
         }
+        // Clear focus AFTER animation fires — not before
+        // (clearing it before causes a second rebuild that resets map style)
+        widget.onFocusConsumed?.call();
       });
-      widget.onFocusConsumed?.call();
     }
   }
 
@@ -1862,6 +1864,10 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
           },
           onMapCreated: (ctrl) {
             _mapController = ctrl;
+            // Re-apply the saved map type in case the controller reinitialised
+            if (_mapType != google_maps.MapType.normal) {
+              setState(() {}); // triggers rebuild with correct mapType
+            }
             // If a device was already focused before map was ready, fly to it now
             if (widget.focusDeviceId != null) {
               final pos = widget.teamLocations[widget.focusDeviceId];
@@ -1872,9 +1878,11 @@ class _MapTabState extends State<MapTab> with AutomaticKeepAliveClientMixin {
                       google_maps.CameraUpdate.newLatLngZoom(pos, 18),
                     );
                   }
+                  widget.onFocusConsumed?.call();
                 });
+              } else {
+                widget.onFocusConsumed?.call();
               }
-              widget.onFocusConsumed?.call();
             }
           },
           mapType: _mapType,
