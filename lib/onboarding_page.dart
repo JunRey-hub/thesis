@@ -21,6 +21,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
   static const _pages = [
     _OnboardingData(
       icon: Icons.security,
+      useAppIcon: true,
       title: "Welcome to\nKeep Watch",
       body:
           "A real-time safety tracking system for guardians. "
@@ -190,6 +191,7 @@ class _OnboardingData {
   final String body;
   final bool isFirst;
   final bool isLast;
+  final bool useAppIcon;   // use ico.png instead of icon
 
   const _OnboardingData({
     required this.icon,
@@ -197,6 +199,7 @@ class _OnboardingData {
     required this.body,
     this.isFirst = false,
     this.isLast = false,
+    this.useAppIcon = false,
   });
 }
 
@@ -231,11 +234,19 @@ class _OnboardingSlide extends StatelessWidget {
                 width: 2,
               ),
             ),
-            child: Icon(
-              data.icon,
-              size: 60,
-              color: scheme.accent,
-            ),
+            child: data.useAppIcon
+                ? Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Image.asset(
+                      'assets/icon/onboarding.png',
+                      fit: BoxFit.contain,
+                    ),
+                  )
+                : Icon(
+                    data.icon,
+                    size: 60,
+                    color: scheme.accent,
+                  ),
           ),
 
           const SizedBox(height: 40),

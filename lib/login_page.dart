@@ -121,7 +121,11 @@ class _LoginPageState extends State<LoginPage> {
             children: [
 
               // ── Logo ─────────────────────────────────────────────
-              Icon(Icons.security, size: 80, color: c.accent),
+              Image.asset(
+                'assets/icon/icon.png',
+                width: 100,
+                height: 100,
+              ),
               const SizedBox(height: 16),
               Text(
                 "KEEP WATCH",
