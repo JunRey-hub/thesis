@@ -59,7 +59,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   final Map<String, Timer> _breachTimers = {};
 
   /// A device is considered stale/disconnected if no packet in this duration
-  static const _staleThreshold = Duration(seconds: 60);
+  static const _staleThreshold = Duration(seconds: 25);
 
   // Convenience getters (first device, used by status card / geofence)
   String? get _pairedWristbandId =>
