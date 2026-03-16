@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as google_maps;
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'app_colors.dart';
 import 'settings_page.dart';
 
@@ -442,15 +443,78 @@ class _MainScaffoldState extends State<MainScaffold> {
       'wristband_id': _pairedWristbandId ?? 'none',
     });
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text("🆘 SOS logged. Your location has been recorded."),
-          backgroundColor: AppColorScheme.of(context).danger,
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    }
+    if (!mounted) return;
+
+    // Show dialog — log recorded + prompt to call 911
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final c = AppColorScheme.of(ctx);
+        return AlertDialog(
+          backgroundColor: c.card,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: c.danger.withOpacity(0.6)),
+          ),
+          title: Row(
+            children: [
+              Icon(Icons.sos, color: c.danger, size: 28),
+              const SizedBox(width: 10),
+              Text(
+                "SOS Triggered",
+                style: TextStyle(
+                  color: c.danger,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "✔ Your location has been recorded.",
+                style: TextStyle(color: c.textPrimary, fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "Do you want to call Emergency Services (911)?",
+                style: TextStyle(color: c.textSecondary, fontSize: 14),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(
+                "Not now",
+                style: TextStyle(color: c.textSecondary),
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                final uri = Uri(scheme: 'tel', path: '911');
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri);
+                }
+              },
+              icon: const Icon(Icons.call, size: 18),
+              label: const Text("Call 911"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: c.danger,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1068,32 +1132,6 @@ class DashboardTab extends StatelessWidget {
                     geofenceMode == 'fixed' ? Icons.push_pin : Icons.my_location,
                   ),
                 ],
-              ),
-
-              const SizedBox(height: 20),
-
-              // ── SOS Button ────────────────────────────────────────
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: onSOS,
-                  icon: Icon(Icons.sos, color: c.danger, size: 22),
-                  label: Text(
-                    "EMERGENCY / SOS",
-                    style: TextStyle(
-                      color: c.danger,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: c.danger),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
               ),
 
               const SizedBox(height: 8),

@@ -781,12 +781,12 @@ class _ManualEntryTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  "1. Log into your TTN (The Things Network) console\n"
-                  "2. Navigate to Application > End Devices\n"
-                  "3. Copy the Device ID (not the EUI)\n"
-                  "4. Paste it above and tap Verify\n\n"
-                  "The wristband must have sent at least one packet\n"
-                  "before it appears in the database.",
+                  "1. Navigate to settings > Manage Devices\n"
+                  "2. Scan the QR Code on the wristband\n"
+                  "3. Type the device ID if QR Code is not working\n"
+                  "4. Verify the device ID\n\n"
+                  "The wristband must be verified before pairing.\n"
+                  "If verification fails, make sure the wristband is powered on.",
                   style: TextStyle(
                       color: c.textSecondary,
                       fontSize: 13,

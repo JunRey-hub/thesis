@@ -35,10 +35,13 @@ dependencies:
   # --- LOCAL STORAGE ---
   shared_preferences: ^2.2.0
 
+  # --- UTILITIES ---
+  url_launcher: ^6.3.0
+
   # --- ICONS ---
   cupertino_icons: ^1.0.8
 
-  # ---- permissions ----
+  # ---- PERMISSIONS ----
   permission_handler: ^11.3.1
 
 dev_dependencies:
