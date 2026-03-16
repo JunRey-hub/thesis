@@ -4,9 +4,11 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as google_maps;
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:vibration/vibration.dart';
 import 'app_colors.dart';
 import 'settings_page.dart';
 
@@ -369,12 +371,16 @@ class _MainScaffoldState extends State<MainScaffold> {
                 _breachTimers[wristbandId]?.cancel();
                 _breachTimers[wristbandId] = Timer.periodic(
                   const Duration(seconds: 5),
-                  (_) {
-                    if (mounted) HapticFeedback.heavyImpact();
+                  (_) async {
+                    if (mounted) {
+                      if (await Vibration.hasVibrator() ?? false) {
+                        Vibration.vibrate(duration: 600, amplitude: 255);
+                      }
+                    }
                   },
                 );
                 // Vibrate immediately on first detection too
-                HapticFeedback.heavyImpact();
+                Vibration.vibrate(duration: 600, amplitude: 255);
               }
             } else {
               // Child returned inside — stop vibrating
@@ -432,7 +438,9 @@ class _MainScaffoldState extends State<MainScaffold> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    HapticFeedback.heavyImpact();
+    if (await Vibration.hasVibrator() ?? false) {
+      Vibration.vibrate(pattern: [0, 300, 100, 300, 100, 300]);
+    }
     _addLog("🆘 SOS TRIGGERED by Guardian. Location recorded.");
 
     // Log SOS event to Firebase

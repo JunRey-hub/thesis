@@ -37,6 +37,7 @@ dependencies:
 
   # --- UTILITIES ---
   url_launcher: ^6.3.0
+  vibration: ^2.0.0
 
   # --- ICONS ---
   cupertino_icons: ^1.0.8
