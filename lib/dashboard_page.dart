@@ -4,7 +4,6 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:vibration/vibration.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as google_maps;
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -106,7 +105,20 @@ class _MainScaffoldState extends State<MainScaffold> {
 
     // Staleness timer — refreshes UI every 10s so stale devices update promptly
     _stalenessTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      // Cancel breach timers for any device that has gone stale
+      _deviceLastSeen.forEach((id, lastSeen) {
+        if (lastSeen != null &&
+            DateTime.now().difference(lastSeen) > _staleThreshold) {
+          if (_breachTimers.containsKey(id)) {
+            _breachTimers[id]?.cancel();
+            _breachTimers.remove(id);
+            final label = _pairedDevices[id] ?? id;
+            _addLog("SYSTEM: [$label] went offline — alerts paused.");
+          }
+        }
+      });
+      setState(() {});
     });
   }
 
@@ -212,6 +224,49 @@ class _MainScaffoldState extends State<MainScaffold> {
       'geofence_mode': _geofenceMode,
       'fixed_center_lat': _fixedCenter.latitude,
       'fixed_center_lng': _fixedCenter.longitude,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // RECHECK BREACHES — called immediately when geofence changes
+  // so vibration fires right away without waiting for next packet
+  // ─────────────────────────────────────────────────────────────────
+  void _recheckBreaches() {
+    if (!_alertsEnabled) return;
+    _teamLocations.forEach((wristbandId, pos) {
+      final distFromCenter = Geolocator.distanceBetween(
+        pos.latitude, pos.longitude,
+        _activeCenter.latitude, _activeCenter.longitude,
+      );
+      final isSafe  = distFromCenter <= _geofenceRadius;
+      final wasSafe = _previousUserStatus[wristbandId] ?? true;
+      final devLabel = _pairedDevices[wristbandId] ?? wristbandId;
+
+      if (!isSafe && wasSafe) {
+        // Just became a breach after geofence change — fire immediately
+        _addLog(
+          "ALERT: [$devLabel] exited Safe Zone "
+          "(${distFromCenter.toStringAsFixed(1)}m from center)",
+        );
+        _breachTimers[wristbandId]?.cancel();
+        _breachTimers[wristbandId] = Timer.periodic(
+          const Duration(seconds: 3),
+          (_) async {
+            if (mounted) {
+              if (await Vibration.hasVibrator() ?? false) {
+                Vibration.vibrate(duration: 800, amplitude: 255);
+              }
+            }
+          },
+        );
+        Vibration.vibrate(duration: 800, amplitude: 255);
+      } else if (isSafe && !wasSafe) {
+        // Just became safe after geofence change — stop vibrating
+        _breachTimers[wristbandId]?.cancel();
+        _breachTimers.remove(wristbandId);
+        _addLog("[$devLabel] returned to Safe Zone.");
+      }
+      _previousUserStatus[wristbandId] = isSafe;
     });
   }
 
@@ -370,17 +425,17 @@ class _MainScaffoldState extends State<MainScaffold> {
                 // Start a 5-second vibration timer for this device
                 _breachTimers[wristbandId]?.cancel();
                 _breachTimers[wristbandId] = Timer.periodic(
-                  const Duration(seconds: 5),
+                  const Duration(seconds: 3),
                   (_) async {
                     if (mounted) {
                       if (await Vibration.hasVibrator() ?? false) {
-                        Vibration.vibrate(duration: 600, amplitude: 255);
+                        Vibration.vibrate(duration: 800, amplitude: 255);
                       }
                     }
                   },
                 );
-                // Vibrate immediately on first detection too
-                Vibration.vibrate(duration: 600, amplitude: 255);
+                // Vibrate immediately on first detection
+                Vibration.vibrate(duration: 800, amplitude: 255);
               }
             } else {
               // Child returned inside — stop vibrating
@@ -561,15 +616,17 @@ class _MainScaffoldState extends State<MainScaffold> {
         onRadiusChanged: (val) {
           setState(() => _geofenceRadius = val);
           _saveGeofenceSettings();
+          _recheckBreaches();
         },
         onGeofenceModeChanged: (mode) {
           setState(() {
             _geofenceMode = mode;
             if (mode == 'fixed') {
-              _fixedCenter = _myLocation; // Snap to current position
+              _fixedCenter = _myLocation;
             }
           });
           _saveGeofenceSettings();
+          _recheckBreaches();
         },
         onViewMap: () => setState(() => _currentIndex = 1),
         onDeviceTap: (deviceId) {
@@ -598,6 +655,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           });
           _saveGeofenceSettings();
           _addLog("Geofence center set at (${latlng.latitude.toStringAsFixed(4)}, ${latlng.longitude.toStringAsFixed(4)})");
+          _recheckBreaches();
         },
       ),
       LogsTab(logs: _activityLogs),
