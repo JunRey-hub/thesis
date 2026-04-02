@@ -312,6 +312,15 @@ class _MainScaffoldState extends State<MainScaffold> {
         setState(() {
           _myLocation = google_maps.LatLng(pos.latitude, pos.longitude);
         });
+        // Write guardian location to Firebase so the Cloud Function
+        // can use it for dynamic geofence breach detection
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          _db.ref('users/${user.uid}').update({
+            'guardian_lat': pos.latitude,
+            'guardian_lng': pos.longitude,
+          });
+        }
       }
     });
   }
