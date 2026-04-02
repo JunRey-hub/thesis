@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -312,15 +314,6 @@ class _MainScaffoldState extends State<MainScaffold> {
         setState(() {
           _myLocation = google_maps.LatLng(pos.latitude, pos.longitude);
         });
-        // Write guardian location to Firebase so the Cloud Function
-        // can use it for dynamic geofence breach detection
-        final user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
-          _db.ref('users/${user.uid}').update({
-            'guardian_lat': pos.latitude,
-            'guardian_lng': pos.longitude,
-          });
-        }
       }
     });
   }
@@ -590,6 +583,62 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // BUZZ WRISTBAND — sends TTN downlink port 2, auto-stops after 5s
+  // ─────────────────────────────────────────────────────────────────
+  Future<void> _buzzWristband(String deviceId, String label) async {
+    const ttnAppId  = "wristband2026";
+    const ttnApiKey = "NNSXS.K67DRRDS4P7IVYOCWJCI6RBWRUXAGEF6SKZUXEI.WMZHYLOREMKIGORTZWA53H7LUJWWK23NT73Z6O3YFC2JIDLH7RXA";
+    const ttnHost   = "au1.cloud.thethings.network";
+
+    Future<bool> sendDownlink(int port) async {
+      try {
+        final client = HttpClient();
+        final req = await client.postUrl(Uri.https(
+          ttnHost,
+          "/api/v3/as/applications/$ttnAppId/devices/$deviceId/down/push",
+        ));
+        req.headers.set("Authorization", "Bearer $ttnApiKey");
+        req.headers.set("Content-Type",  "application/json");
+        req.write(jsonEncode({
+          "downlinks": [{"f_port": port, "frm_payload": "AQ==", "priority": "NORMAL"}],
+        }));
+        final resp = await req.close();
+        client.close();
+        debugPrint("[Buzz] port $port → HTTP ${resp.statusCode}");
+        return resp.statusCode == 200 || resp.statusCode == 204;
+      } catch (e) {
+        debugPrint("[Buzz] Error: $e");
+        return false;
+      }
+    }
+
+    // Send port 2 — start buzzing
+    final success = await sendDownlink(2);
+    _addLog("📳 Buzzed [$label]");
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          success
+              ? "📳 Buzz sent to $label"
+              : "❌ Failed to send buzz — check internet connection",
+        ),
+        backgroundColor: success
+            ? Colors.orange
+            : AppColorScheme.of(context).danger,
+        duration: const Duration(seconds: 3),
+      ));
+    }
+
+    if (!success) return;
+
+    // Auto-stop after 5 seconds — send port 3
+    await Future.delayed(const Duration(seconds: 5));
+    await sendDownlink(3);
+    debugPrint("[Buzz] Auto-stopped motor on $deviceId");
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // BUILD
   // ─────────────────────────────────────────────────────────────────
   @override
@@ -645,6 +694,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           });
         },
         onSOS: _triggerSOS,
+        onBuzz: _buzzWristband,
       ),
       MapTab(
         guardianLocation: _myLocation,
@@ -790,6 +840,7 @@ class DashboardTab extends StatelessWidget {
   final ValueChanged<String> onGeofenceModeChanged;
   final VoidCallback onViewMap;
   final VoidCallback onSOS;
+  final Function(String deviceId, String label) onBuzz;
   final ValueChanged<String> onDeviceTap;   // tapped device id → go to map
 
   const DashboardTab({
@@ -810,6 +861,7 @@ class DashboardTab extends StatelessWidget {
     required this.onGeofenceModeChanged,
     required this.onViewMap,
     required this.onSOS,
+    required this.onBuzz,
     required this.onDeviceTap,
     this.pairedWristbandId,
     this.wristbandLabel,
@@ -868,6 +920,7 @@ class DashboardTab extends StatelessWidget {
                   formatLastSeen:   _formatLastSeen,
                   batteryColor:     _batteryColor,
                   batteryIcon:      _batteryIcon,
+                  onBuzz:           onBuzz,
                 ),
 
               const SizedBox(height: 16),
@@ -1259,6 +1312,7 @@ class _SwipeableWristbandCards extends StatefulWidget {
   final String Function(DateTime?) formatLastSeen;
   final Color Function(int?) batteryColor;
   final IconData Function(int?) batteryIcon;
+  final Function(String deviceId, String label) onBuzz;
 
   const _SwipeableWristbandCards({
     required this.pairedDevices,
@@ -1269,6 +1323,7 @@ class _SwipeableWristbandCards extends StatefulWidget {
     required this.formatLastSeen,
     required this.batteryColor,
     required this.batteryIcon,
+    required this.onBuzz,
   });
 
   @override
@@ -1294,7 +1349,7 @@ class _SwipeableWristbandCardsState extends State<_SwipeableWristbandCards> {
     return Column(
       children: [
         SizedBox(
-          height: 80,
+          height: 96,
           child: PageView.builder(
             controller: _pageController,
             itemCount: ids.length,
@@ -1317,6 +1372,7 @@ class _SwipeableWristbandCardsState extends State<_SwipeableWristbandCards> {
                 batteryColor:   widget.batteryColor(battery),
                 batteryIcon:    widget.batteryIcon(battery),
                 formatLastSeen: widget.formatLastSeen,
+                onBuzz:         () => widget.onBuzz(id, label),
               );
             },
           ),
@@ -1386,6 +1442,7 @@ class _WristbandStatusCard extends StatelessWidget {
   final Color batteryColor;
   final IconData batteryIcon;
   final String Function(DateTime?) formatLastSeen;
+  final VoidCallback onBuzz;
 
   const _WristbandStatusCard({
     required this.label,
@@ -1396,13 +1453,14 @@ class _WristbandStatusCard extends StatelessWidget {
     required this.batteryColor,
     required this.batteryIcon,
     required this.formatLastSeen,
+    required this.onBuzz,
   });
 
   @override
   Widget build(BuildContext context) {
     final c = AppColorScheme.of(context);
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: c.card,
         borderRadius: BorderRadius.circular(12),
@@ -1412,15 +1470,14 @@ class _WristbandStatusCard extends StatelessWidget {
       ),
       child: Row(
         children: [
+          // ── Watch icon with online dot ────────────────────────
           Stack(
             children: [
               Icon(Icons.watch, color: c.textSecondary, size: 34),
               Positioned(
-                right: 0,
-                bottom: 0,
+                right: 0, bottom: 0,
                 child: Container(
-                  width: 10,
-                  height: 10,
+                  width: 10, height: 10,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: isOnline ? c.success : Colors.grey,
@@ -1431,14 +1488,14 @@ class _WristbandStatusCard extends StatelessWidget {
             ],
           ),
           const SizedBox(width: 12),
+          // ── Label and status ──────────────────────────────────
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  label,
-                  style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold),
-                ),
+                Text(label,
+                    style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold)),
                 Text(
                   isOnline ? "Online" : "Offline • Last: ${formatLastSeen(lastSeen)}",
                   style: TextStyle(
@@ -1449,22 +1506,45 @@ class _WristbandStatusCard extends StatelessWidget {
               ],
             ),
           ),
+          // ── Battery ──────────────────────────────────────────
           if (battery != null)
             Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(batteryIcon, color: batteryColor, size: 20),
-                Text(
-                  "$battery%",
-                  style: TextStyle(
-                    color: batteryColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                Icon(batteryIcon, color: batteryColor, size: 18),
+                Text("$battery%",
+                    style: TextStyle(color: batteryColor, fontSize: 10, fontWeight: FontWeight.bold)),
               ],
             )
           else
-            Icon(Icons.battery_unknown, color: c.textSecondary, size: 20),
+            Icon(Icons.battery_unknown, color: c.textSecondary, size: 18),
+          const SizedBox(width: 10),
+          // ── BUZZ Button ───────────────────────────────────────
+          GestureDetector(
+            onTap: onBuzz,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.withOpacity(0.7), width: 1.5),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.vibration, color: Colors.orange, size: 16),
+                  const SizedBox(width: 4),
+                  const Text("BUZZ",
+                      style: TextStyle(
+                        color: Colors.orange,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      )),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
