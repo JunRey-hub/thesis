@@ -841,8 +841,8 @@ class _QrScannerTabState extends State<_QrScannerTab>
       await old?.dispose();
     } catch (_) {}
     
-    // Small delay to let camera hardware release
-    await Future.delayed(const Duration(milliseconds: 300));
+    // Small delay to let camera hardware release — longer on real devices
+    await Future.delayed(const Duration(milliseconds: 800));
     
     if (!mounted) return;
 

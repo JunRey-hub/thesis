@@ -268,6 +268,7 @@ class _MainScaffoldState extends State<MainScaffold> {
               if (await Vibration.hasVibrator() ?? false) {
                 Vibration.vibrate(duration: 800, amplitude: 255);
               }
+              _playBreachAlert();
             }
           },
         );
@@ -506,7 +507,7 @@ class _MainScaffoldState extends State<MainScaffold> {
                   "ALERT: [$devLabel] exited Safe Zone "
                   "(${distFromCenter.toStringAsFixed(1)}m from center)",
                 );
-                // Start breach alert — vibration + sound
+                // Start breach alert — vibration + sound synced every 3s
                 _playBreachAlert();
                 _breachTimers[wristbandId]?.cancel();
                 _breachTimers[wristbandId] = Timer.periodic(
@@ -516,6 +517,7 @@ class _MainScaffoldState extends State<MainScaffold> {
                       if (await Vibration.hasVibrator() ?? false) {
                         Vibration.vibrate(duration: 800, amplitude: 255);
                       }
+                      _playBreachAlert();
                     }
                   },
                 );
@@ -670,7 +672,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   Future<void> _playBreachAlert() async {
     try {
       await _alertPlayer.stop();
-      await _alertPlayer.setReleaseMode(ReleaseMode.loop);
+      await _alertPlayer.setReleaseMode(ReleaseMode.release);
       await _alertPlayer.play(AssetSource('audio/alert.mp3'));
     } catch (e) {
       debugPrint('[Alert] Audio error: $e');
