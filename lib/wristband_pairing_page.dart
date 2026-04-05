@@ -781,12 +781,12 @@ class _ManualEntryTab extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  "1. Navigate to settings > Manage Devices\n"
-                  "2. Scan the QR Code on the wristband\n"
-                  "3. Type the device ID if QR Code is not working\n"
-                  "4. Verify the device ID\n\n"
-                  "The wristband must be verified before pairing.\n"
-                  "If verification fails, make sure the wristband is powered on.",
+                  "1. Log into your TTN (The Things Network) console\n"
+                  "2. Navigate to Application > End Devices\n"
+                  "3. Copy the Device ID (not the EUI)\n"
+                  "4. Paste it above and tap Verify\n\n"
+                  "The wristband must have sent at least one packet\n"
+                  "before it appears in the database.",
                   style: TextStyle(
                       color: c.textSecondary,
                       fontSize: 13,
@@ -818,6 +818,7 @@ class _QrScannerTabState extends State<_QrScannerTab>
   bool _scanned         = false;
   bool _torchOn         = false;
   bool _hasPermission   = false;
+  bool _cameraLoading   = false;
   CameraFacing _facing  = CameraFacing.front;
 
   @override
@@ -828,22 +829,53 @@ class _QrScannerTabState extends State<_QrScannerTab>
     setState(() => _hasPermission = true);
   }
 
-  void _startController() {
-    _controller?.dispose();
-    _controller = MobileScannerController(
+  Future<void> _startController() async {
+    setState(() => _cameraLoading = true);
+    
+    // Properly dispose old controller first
+    final old = _controller;
+    _controller = null;
+    if (mounted) setState(() {});
+    
+    try {
+      await old?.dispose();
+    } catch (_) {}
+    
+    // Small delay to let camera hardware release
+    await Future.delayed(const Duration(milliseconds: 300));
+    
+    if (!mounted) return;
+
+    final controller = MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
       facing: _facing,
       torchEnabled: false,
       autoStart: true,
     );
-    _controller!.start().catchError((_) {
-      // Fallback: if back camera unavailable (laptop), use front
-      if (_facing == CameraFacing.back && mounted) {
-        setState(() => _facing = CameraFacing.front);
-        _startController();
+
+    try {
+      await controller.start();
+      if (mounted) {
+        setState(() {
+          _controller     = controller;
+          _cameraLoading  = false;
+        });
+      } else {
+        controller.dispose();
       }
-    });
-    if (mounted) setState(() {});
+    } catch (_) {
+      // Back camera unavailable — fall back to front
+      controller.dispose();
+      if (_facing == CameraFacing.back && mounted) {
+        setState(() {
+          _facing        = CameraFacing.front;
+          _cameraLoading = false;
+        });
+        _startController();
+      } else {
+        if (mounted) setState(() => _cameraLoading = false);
+      }
+    }
   }
 
   void _flipCamera() {
@@ -910,7 +942,7 @@ class _QrScannerTabState extends State<_QrScannerTab>
 
   @override
   Widget build(BuildContext context) {
-    if (!_hasPermission || _controller == null) {
+    if (!_hasPermission || _controller == null || _cameraLoading) {
       return const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,

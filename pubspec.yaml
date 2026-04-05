@@ -38,6 +38,7 @@ dependencies:
   # --- UTILITIES ---
   url_launcher: ^6.3.0
   vibration: ^2.0.0
+  audioplayers: ^6.0.0
 
   # --- ICONS ---
   cupertino_icons: ^1.0.8
@@ -61,5 +62,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon/app_icon.png
-    - assets/icon/icon.png
-    - assets/icon/onboarding.png
+    - assets/icon/ico.png
+    - assets/audio/alert.mp3

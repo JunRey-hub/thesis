@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -46,6 +47,8 @@ class _MainScaffoldState extends State<MainScaffold> {
   Map<String, String> _pairedDevices = {};
   /// Per-device online flag
   Map<String, bool> _deviceOnline = {};
+  /// Per-device GPS fix flag (false = online but sending dummy 0,0 packets)
+  Map<String, bool> _deviceHasFix = {};
   /// Per-device battery %
   Map<String, int?> _deviceBattery = {};
   /// Per-device speed km/h
@@ -60,6 +63,9 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   /// Per-device breach vibration timers — vibrate every 5s while outside geofence
   final Map<String, Timer> _breachTimers = {};
+
+  /// Audio player for breach alert sound
+  final AudioPlayer _alertPlayer = AudioPlayer();
 
   /// A device is considered stale/disconnected if no packet in this duration
   static const _staleThreshold = Duration(seconds: 25);
@@ -115,6 +121,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           if (_breachTimers.containsKey(id)) {
             _breachTimers[id]?.cancel();
             _breachTimers.remove(id);
+            _stopBreachAlert();
             final label = _pairedDevices[id] ?? id;
             _addLog("SYSTEM: [$label] went offline — alerts paused.");
           }
@@ -131,6 +138,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     for (final t in _breachTimers.values) t.cancel();
     _breachTimers.clear();
     for (final sub in _deviceSubs.values) sub.cancel();
+    _alertPlayer.dispose();
     super.dispose();
   }
 
@@ -159,6 +167,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       setState(() {
         _teamLocations.clear();
         _deviceOnline.clear();
+        _deviceHasFix.clear();
         _deviceBattery.clear();
         _deviceSpeed.clear();
         _deviceLastSeen.clear();
@@ -250,6 +259,7 @@ class _MainScaffoldState extends State<MainScaffold> {
           "ALERT: [$devLabel] exited Safe Zone "
           "(${distFromCenter.toStringAsFixed(1)}m from center)",
         );
+        _playBreachAlert();
         _breachTimers[wristbandId]?.cancel();
         _breachTimers[wristbandId] = Timer.periodic(
           const Duration(seconds: 3),
@@ -263,9 +273,10 @@ class _MainScaffoldState extends State<MainScaffold> {
         );
         Vibration.vibrate(duration: 800, amplitude: 255);
       } else if (isSafe && !wasSafe) {
-        // Just became safe after geofence change — stop vibrating
+        // Just became safe after geofence change — stop vibrating and sound
         _breachTimers[wristbandId]?.cancel();
         _breachTimers.remove(wristbandId);
+        _stopBreachAlert();
         _addLog("[$devLabel] returned to Safe Zone.");
       }
       _previousUserStatus[wristbandId] = isSafe;
@@ -303,17 +314,43 @@ class _MainScaffoldState extends State<MainScaffold> {
       }
     } catch (_) {}
 
-    // Continuous stream
+    // Write guardian location immediately on startup — don't wait for movement
+    try {
+      final initialPos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        _db.ref('users/${user.uid}').update({
+          'guardian_lat': initialPos.latitude,
+          'guardian_lng': initialPos.longitude,
+        });
+      }
+      if (mounted) {
+        setState(() {
+          _myLocation = google_maps.LatLng(initialPos.latitude, initialPos.longitude);
+        });
+      }
+    } catch (_) {}
+
+    // Continuous stream — updates Firebase on every position change
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 3,
+        distanceFilter: 0,
       ),
     ).listen((pos) {
       if (mounted) {
         setState(() {
           _myLocation = google_maps.LatLng(pos.latitude, pos.longitude);
         });
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          _db.ref('users/${user.uid}').update({
+            'guardian_lat': pos.latitude,
+            'guardian_lng': pos.longitude,
+          });
+        }
       }
     });
   }
@@ -405,7 +442,52 @@ class _MainScaffoldState extends State<MainScaffold> {
         }
         lastSeen ??= DateTime.now();
 
+        // Only mark online if last_updated is within stale threshold
+        // This prevents stale Firebase data from showing "No GPS Fix" on startup
+        final bool isFresh = lastSeen != null &&
+            DateTime.now().difference(lastSeen) <= _staleThreshold;
+
+        setState(() {
+          _deviceOnline[wristbandId]   = isFresh;
+          _deviceLastSeen[wristbandId] = lastSeen;
+          if (!isFresh) _deviceHasFix[wristbandId] = false;
+        });
+
+        // If stale — treat as offline, don't process location
+        if (!isFresh) return;
+
+        // If no coordinates at all — device is online but never had a fix
+        if (lat == null || lng == null) {
+          setState(() {
+            _deviceHasFix[wristbandId] = false;
+            _previousUserStatus[wristbandId] = true;
+          });
+          _breachTimers[wristbandId]?.cancel();
+          _breachTimers.remove(wristbandId);
+          return;
+        }
+
         if (lat != null && lng != null) {
+          // Read has_fix field explicitly — Cloud Function sets this correctly
+          final bool hasFix = payload['has_fix'] == true;
+          final bool isDummy = (lat == 0.0 && lng == 0.0) || !hasFix;
+
+          setState(() {
+            _deviceBattery[wristbandId]  = battery;
+            _deviceHasFix[wristbandId]   = !isDummy;
+          });
+
+          // On no-fix — reset breach state so stale breach from previous session
+          // doesn't persist after reboot
+          if (isDummy) {
+            setState(() {
+              _previousUserStatus[wristbandId] = true;
+            });
+            _breachTimers[wristbandId]?.cancel();
+            _breachTimers.remove(wristbandId);
+            return;
+          }
+
           final wristbandPos = google_maps.LatLng(lat, lng);
           final distFromCenter = Geolocator.distanceBetween(
             lat, lng,
@@ -424,7 +506,8 @@ class _MainScaffoldState extends State<MainScaffold> {
                   "ALERT: [$devLabel] exited Safe Zone "
                   "(${distFromCenter.toStringAsFixed(1)}m from center)",
                 );
-                // Start a 5-second vibration timer for this device
+                // Start breach alert — vibration + sound
+                _playBreachAlert();
                 _breachTimers[wristbandId]?.cancel();
                 _breachTimers[wristbandId] = Timer.periodic(
                   const Duration(seconds: 3),
@@ -440,10 +523,11 @@ class _MainScaffoldState extends State<MainScaffold> {
                 Vibration.vibrate(duration: 800, amplitude: 255);
               }
             } else {
-              // Child returned inside — stop vibrating
+              // Child returned inside — stop vibrating and sound
               if (isSafe != wasSafe) {
                 _breachTimers[wristbandId]?.cancel();
                 _breachTimers.remove(wristbandId);
+                _stopBreachAlert();
                 _addLog("[$devLabel] returned to Safe Zone.");
               }
             }
@@ -451,15 +535,13 @@ class _MainScaffoldState extends State<MainScaffold> {
             // Alerts disabled — make sure any running timers are stopped
             _breachTimers[wristbandId]?.cancel();
             _breachTimers.remove(wristbandId);
+            _stopBreachAlert();
           }
           _previousUserStatus[wristbandId] = isSafe;
 
           setState(() {
-            _teamLocations[wristbandId]   = wristbandPos;
-            _deviceOnline[wristbandId]    = true;
-            _deviceBattery[wristbandId]   = battery;
-            _deviceSpeed[wristbandId]     = speed;
-            _deviceLastSeen[wristbandId]  = lastSeen;
+            _teamLocations[wristbandId]  = wristbandPos;
+            _deviceSpeed[wristbandId]    = speed;
           });
         }
       } catch (e) {
@@ -583,8 +665,25 @@ class _MainScaffoldState extends State<MainScaffold> {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // BUZZ WRISTBAND — sends TTN downlink port 2, auto-stops after 5s
+  // BREACH ALERT SOUND
   // ─────────────────────────────────────────────────────────────────
+  Future<void> _playBreachAlert() async {
+    try {
+      await _alertPlayer.stop();
+      await _alertPlayer.setReleaseMode(ReleaseMode.loop);
+      await _alertPlayer.play(AssetSource('audio/alert.mp3'));
+    } catch (e) {
+      debugPrint('[Alert] Audio error: $e');
+    }
+  }
+
+  Future<void> _stopBreachAlert() async {
+    try {
+      await _alertPlayer.stop();
+    } catch (e) {
+      debugPrint('[Alert] Stop error: $e');
+    }
+  }
   Future<void> _buzzWristband(String deviceId, String label) async {
     const ttnAppId  = "wristband2026";
     const ttnApiKey = "NNSXS.K67DRRDS4P7IVYOCWJCI6RBWRUXAGEF6SKZUXEI.WMZHYLOREMKIGORTZWA53H7LUJWWK23NT73Z6O3YFC2JIDLH7RXA";
@@ -620,7 +719,7 @@ class _MainScaffoldState extends State<MainScaffold> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(
           success
-              ? "📳 Buzz sent to $label"
+              ? "📳 Buzz sent to $label — motor will vibrate on next packet!"
               : "❌ Failed to send buzz — check internet connection",
         ),
         backgroundColor: success
@@ -659,6 +758,7 @@ class _MainScaffoldState extends State<MainScaffold> {
         deviceSpeeds: _deviceSpeed,
         pairedDevices: _pairedDevices,
         deviceOnlineMap: _deviceOnline,
+        deviceHasFixMap: _deviceHasFix,
         deviceLastSeenMap: _deviceLastSeen,
         deviceBatteryMap: _deviceBattery,
         staleThreshold: _staleThreshold,
@@ -825,6 +925,7 @@ class DashboardTab extends StatelessWidget {
   final Map<String, double?> deviceSpeeds;
   final Map<String, String> pairedDevices;
   final Map<String, bool> deviceOnlineMap;
+  final Map<String, bool> deviceHasFixMap;
   final Map<String, DateTime?> deviceLastSeenMap;
   final Map<String, int?> deviceBatteryMap;
   final Duration staleThreshold;
@@ -851,6 +952,7 @@ class DashboardTab extends StatelessWidget {
     required this.deviceSpeeds,
     required this.pairedDevices,
     required this.deviceOnlineMap,
+    required this.deviceHasFixMap,
     required this.deviceLastSeenMap,
     required this.deviceBatteryMap,
     required this.staleThreshold,
@@ -970,10 +1072,11 @@ class DashboardTab extends StatelessWidget {
                         scrollDirection: Axis.horizontal,
                         itemCount: pairedDevices.length,
                         itemBuilder: (context, index) {
-                          final id    = pairedDevices.keys.elementAt(index);
-                          final label = pairedDevices[id] ?? id;
+                          final id      = pairedDevices.keys.elementAt(index);
+                          final label   = pairedDevices[id] ?? id;
                           final hasLocation = teamLocations.containsKey(id);
                           final isOnline    = deviceOnlineMap[id] ?? false;
+                          final hasFix      = deviceHasFixMap[id] ?? false;
                           final lastSeen    = deviceLastSeenMap[id];
                           final isStale     = lastSeen == null
                               ? false
@@ -1054,8 +1157,12 @@ class DashboardTab extends StatelessWidget {
                             ); // GestureDetector
                           }
 
-                          // ── No location yet — show GPS search state ──
-                          if (!hasLocation) {
+                          // ── No location yet OR no GPS fix ────────────
+                          if (!hasLocation || !hasFix) {
+                            // State 1: Never received any packet — truly offline
+                            // State 2: Receiving dummy packets — online but no fix
+                            final bool noFixOnline = isOnline && !hasFix;
+
                             return Container(
                               width: 115,
                               margin: const EdgeInsets.only(right: 10),
@@ -1064,23 +1171,32 @@ class DashboardTab extends StatelessWidget {
                                 color: c.card,
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(
-                                  color: c.border.withOpacity(0.4),
+                                  color: noFixOnline
+                                      ? Colors.orange.withOpacity(0.5)
+                                      : isOnline
+                                          ? c.accent.withOpacity(0.4)
+                                          : c.border.withOpacity(0.4),
                                 ),
                               ),
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: isOnline
-                                          ? Colors.orange
-                                          : c.textSecondary,
-                                    ),
-                                  ),
+                                  // Icon
+                                  noFixOnline
+                                      ? const Icon(Icons.satellite_alt,
+                                          color: Colors.orange, size: 22)
+                                      : isOnline
+                                          ? SizedBox(
+                                              width: 22, height: 22,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: c.accent,
+                                              ),
+                                            )
+                                          : Icon(Icons.watch_off,
+                                              color: c.textSecondary, size: 22),
                                   const SizedBox(height: 6),
+                                  // Label
                                   Text(
                                     label,
                                     overflow: TextOverflow.ellipsis,
@@ -1091,30 +1207,38 @@ class DashboardTab extends StatelessWidget {
                                     ),
                                   ),
                                   const SizedBox(height: 2),
+                                  // Status text
                                   Text(
-                                    isOnline
-                                        ? "Searching GPS…"
-                                        : "Waiting for device…",
+                                    noFixOnline
+                                        ? "No GPS Fix"
+                                        : isOnline
+                                            ? "Joining TTN…"
+                                            : "Offline",
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       fontSize: 10,
-                                      color: isOnline
+                                      fontWeight: FontWeight.bold,
+                                      color: noFixOnline
                                           ? Colors.orange
-                                          : c.textSecondary,
+                                          : isOnline
+                                              ? c.accent
+                                              : c.textSecondary,
                                     ),
                                   ),
-                                  if (isOnline)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(
-                                        "Go outdoors",
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          color: c.textSecondary,
-                                        ),
-                                      ),
+                                  const SizedBox(height: 2),
+                                  // Hint text
+                                  Text(
+                                    noFixOnline
+                                        ? "Go outdoors"
+                                        : isOnline
+                                            ? "Connecting…"
+                                            : "Not sending",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      color: c.textSecondary,
                                     ),
+                                  ),
                                 ],
                               ),
                             );
